@@ -302,7 +302,10 @@ def load_schedule(year):
     return s[["EventName","Country","RoundNumber"]].reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# IMPORTANTE: usar cache_resource (no cache_data) para objetos FastF1
+# que no son serializables — cache_data intenta picklearlos y corrompe
+# el estado de Streamlit en la segunda consulta.
+@st.cache_resource(show_spinner=False)
 def load_session(year, gp, stype):
     sess = fastf1.get_session(year, gp, stype)
     sess.load(telemetry=True, laps=True, weather=False, messages=False)
@@ -311,12 +314,20 @@ def load_session(year, gp, stype):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_drivers(year, gp, stype):
+    """Carga solo los nombres — serializable, usa cache_data."""
     try:
-        sess = load_session(year, gp, stype)
-        return sorted([sess.get_driver(d)["Abbreviation"] for d in sess.drivers])
+        # Carga liviana solo para obtener la lista de pilotos
+        sess_light = fastf1.get_session(year, gp, stype)
+        sess_light.load(telemetry=False, laps=False,
+                        weather=False, messages=False)
+        return sorted([
+            sess_light.get_driver(d)["Abbreviation"]
+            for d in sess_light.drivers
+        ])
     except Exception:
         return ["VER","PER","LEC","SAI","HAM","RUS","NOR","PIA",
-                "ALO","STR","GAS","OCO","TSU","RIC","ALB","SAR","MAG","HUL","BOT","ZHO"]
+                "ALO","STR","GAS","OCO","TSU","RIC","ALB","SAR",
+                "MAG","HUL","BOT","ZHO"]
 
 
 def get_fastest_lap(session, driver):
@@ -1322,8 +1333,8 @@ def generate_report(d):
                             config={"displayModeBar": False})
         body += f'<div class="section"><h2>{title.upper()}</h2>{inner}</div>\n'
 
-    lt1 = fmt_lap(getattr(d["lap1"], "LapTime", None))
-    lt2 = fmt_lap(getattr(d["lap2"], "LapTime", None))
+    lt1 = _fmt_seconds(d["lap1"].get("LapTime", 0)) if d.get("lap1") else "–:––.–––"
+    lt2 = _fmt_seconds(d["lap2"].get("LapTime", 0)) if d.get("lap2") else "–:––.–––"
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
     return f"""<!DOCTYPE html>
@@ -1389,8 +1400,8 @@ def render_header():
 
 
 def render_kpis(lap1, lap2, d1, d2, delta_end, t1, t2):
-    lt1 = fmt_lap(getattr(lap1, "LapTime", None) if lap1 is not None else None)
-    lt2 = fmt_lap(getattr(lap2, "LapTime", None) if lap2 is not None else None)
+    lt1 = _fmt_seconds(lap1.get("LapTime", 0)) if lap1 else "–:––.–––"
+    lt2 = _fmt_seconds(lap2.get("LapTime", 0)) if lap2 else "–:––.–––"
     # delta > 0 → d1 faster;  delta < 0 → d2 faster
     leader = d1 if delta_end > 0 else d2
     sign   = "▲" if delta_end > 0 else "▼"
@@ -1415,17 +1426,19 @@ def render_kpis(lap1, lap2, d1, d2, delta_end, t1, t2):
 
 
 def render_sectors(lap1, lap2, d1, d2):
+    # lap1/lap2 son dicts con sector times ya en segundos (float)
     html = '<div class="sec-label">SECTOR ANALYSIS</div><div class="sector-grid">'
     for s, lbl in [("Sector1Time","SECTOR 1"),("Sector2Time","SECTOR 2"),("Sector3Time","SECTOR 3")]:
         try:
-            v1 = lap1[s].total_seconds(); v2 = lap2[s].total_seconds()
-            diff = v1 - v2  # negativo = d1 más rápido; positivo = d2 más rápido
-            # menor tiempo = verde (más rápido)
+            v1 = lap1.get(s); v2 = lap2.get(s)
+            if v1 is None or v2 is None:
+                raise ValueError("missing")
+            v1 = float(v1); v2 = float(v2)
+            diff = v1 - v2
             c1 = "c-green" if diff < 0 else "c-red"
             c2 = "c-green" if diff > 0 else "c-red"
             if abs(diff) < 0.001:
                 c1 = c2 = "c-yellow"
-            # indica quién ganó el sector y por cuánto
             if diff < 0:
                 ind = f"{d1} +{abs(diff):.3f}s"
             elif diff > 0:
@@ -1677,16 +1690,44 @@ def main():
             tc1 = get_team_color(session, driver1, D1)
             tc2 = get_team_color(session, driver2, D2)
 
+            # Convertir lap1/lap2 de Series FastF1 a dict serializable
+            def lap_to_dict(lap):
+                if lap is None: return {}
+                try:
+                    return {k: (v.total_seconds() if hasattr(v, 'total_seconds')
+                                else v)
+                            for k, v in lap.items()
+                            if isinstance(v, (int, float, str, type(None)))
+                            or hasattr(v, 'total_seconds')}
+                except Exception:
+                    return {}
+
+            # Convertir pos1/pos2 a DataFrame con solo columnas X,Y (liviano)
+            def slim_pos(pos):
+                if pos is None or (hasattr(pos, 'empty') and pos.empty):
+                    return None
+                try:
+                    cols = [c for c in ['X','Y'] if c in pos.columns]
+                    return pos[cols].reset_index(drop=True) if cols else None
+                except Exception:
+                    return None
+
+            # IMPORTANTE: NO guardar session (objeto FastF1) dentro de
+            # st.session_state — Streamlit lo serializa y corrompe el estado.
+            # Se accede siempre via load_session() que usa cache_resource.
+            session_key = f"{year}||{gp_name}||{sess}"
+
             st.session_state.tdata = dict(
                 dist=dist, t1=t1i, t2=t2i, delta=delta,
-                lap1=lap1, lap2=lap2, pos1=pos1, pos2=pos2,
+                lap1=lap_to_dict(lap1), lap2=lap_to_dict(lap2),
+                pos1=slim_pos(pos1), pos2=slim_pos(pos2),
                 bz1=bz1, bz2=bz2, all1=all1, all2=all2,
                 ql1=ql1, ql2=ql2,
                 tc1=tc1, tc2=tc2,
                 driver1=driver1, driver2=driver2,
                 gp_name=gp_name, year=year,
                 session=SESSION_LABELS[sess],
-                session_obj=session,
+                session_key=session_key,   # clave para recuperar la sesión
             )
 
             status(f"✓  Ready — {len(dist)} pts · {len(bz1)} zones ({driver1}) · {len(bz2)} zones ({driver2})",
@@ -1907,7 +1948,16 @@ def main():
         ql2 = d.get("ql2", pd.DataFrame())
         tc1 = d.get("tc1", D1)
         tc2 = d.get("tc2", D2)
-        session_obj = d.get("session_obj")
+
+        # Recuperar la sesión FastF1 desde cache_resource (no desde session_state)
+        session_obj = None
+        try:
+            sk = d.get("session_key", "")
+            if sk:
+                parts = sk.split("||")
+                session_obj = load_session(int(parts[0]), parts[1], parts[2])
+        except Exception:
+            session_obj = None
 
         # ════════════════════════════════════════════════════════════════════
         # SECCIÓN A — VIOLIN PARRILLA COMPLETA (selector multi-piloto)
@@ -2183,3 +2233,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
