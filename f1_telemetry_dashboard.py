@@ -273,14 +273,6 @@ SESSION_LABELS = {
     "Q": "Qualifying", "R": "Race",
 }
 
-# Plotly chart config dicts — globales para poder usarlos antes de main()
-CHART_CFG = {
-    "scrollZoom": True, "displayModeBar": True,
-    "modeBarButtonsToRemove": ["autoScale2d","lasso2d","select2d"],
-    "displaylogo": False,
-}
-MINI_CFG = {"displayModeBar": False, "displaylogo": False}
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATA LOADING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -321,124 +313,7 @@ def load_session(year, gp, stype):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_session_standings(year, gp, stype):
-    """
-    Carga liviana solo para clasificación — sin telemetría.
-    Devuelve DataFrames serializables, no el objeto Session.
-    """
-    sess = fastf1.get_session(year, gp, stype)
-    sess.load(telemetry=False, laps=True, weather=False, messages=False)
-
-    is_race = stype in ("R", "S")   # Race o Sprint
-
-    rows = []
-    TEAM_COLORS_MAP = {
-        "mercedes":    "#27F4D2", "ferrari":     "#E8002D",
-        "red bull":    "#3671C6", "mclaren":     "#FF8000",
-        "aston martin":"#229971", "alpine":      "#FF87BC",
-        "williams":    "#64C4FF", "rb":          "#6692FF",
-        "kick sauber": "#52E252", "sauber":      "#52E252",
-        "haas":        "#B6BABD", "audi":        "#C8F026",
-        "cadillac":    "#A50F2D",
-    }
-
-    def team_clr(name):
-        n = str(name).lower()
-        for k, v in TEAM_COLORS_MAP.items():
-            if k in n: return v
-        return "#566A7F"
-
-    if is_race:
-        try:
-            res = sess.results
-            laps = sess.laps
-            for _, row in res.iterrows():
-                drv    = str(row.get("Abbreviation", "???"))
-                pos    = row.get("Position")
-                team   = str(row.get("TeamName", ""))
-                status = str(row.get("Status", ""))
-                pts    = row.get("Points", 0)
-
-                # Tiempo directo de la API (objeto timedelta)
-                t = row.get("Time")
-                if hasattr(t, "total_seconds") and not pd.isna(t):
-                    gap_s    = float(t.total_seconds())
-                    time_str = t  # guardamos el timedelta crudo
-                else:
-                    gap_s    = 9999.0
-                    time_str = None
-
-                # Mejor vuelta de carrera — LapTime nativo de FastF1
-                drv_laps = laps[laps["Driver"] == drv]
-                best_lt  = None
-                best_s   = None
-                if not drv_laps.empty:
-                    valid = drv_laps["LapTime"].dropna()
-                    if not valid.empty:
-                        best_lt = valid.min()          # timedelta nativo
-                        best_s  = float(best_lt.total_seconds())
-
-                rows.append({
-                    "pos":     int(pos) if pos and not pd.isna(pos) else 99,
-                    "driver":  drv,
-                    "team":    team,
-                    "color":   team_clr(team),
-                    "gap_s":   gap_s,
-                    "time_td": time_str,           # timedelta o None
-                    "best_s":  best_s,             # float o None
-                    "best_td": best_lt,            # timedelta o None
-                    "pts":     int(pts) if pts and not pd.isna(pts) else 0,
-                    "status":  status,
-                })
-        except Exception as e:
-            is_race = False
-
-    if not is_race:
-        laps = sess.laps
-        for drv in laps["Driver"].unique():
-            drv_laps = laps[laps["Driver"] == drv]
-            valid    = drv_laps["LapTime"].dropna()
-            if valid.empty:
-                continue
-
-            # LapTime nativo — timedelta directo de FastF1
-            best_lt = valid.min()
-            best_s  = float(best_lt.total_seconds())
-
-            try:
-                info  = sess.get_driver(drv)
-                abbr  = str(info.get("Abbreviation", drv))
-                team  = str(info.get("TeamName", ""))
-            except Exception:
-                abbr = drv; team = ""
-
-            rows.append({
-                "pos":     0,
-                "driver":  abbr,
-                "team":    team,
-                "color":   team_clr(team),
-                "gap_s":   best_s,
-                "time_td": best_lt,
-                "best_s":  best_s,
-                "best_td": best_lt,
-                "pts":     0,
-                "status":  "",
-            })
-
-        rows.sort(key=lambda x: x["gap_s"])
-        leader_s = rows[0]["gap_s"] if rows else 0.0
-        for i, r in enumerate(rows):
-            r["pos"]   = i + 1
-            r["gap_s"] = r["gap_s"] - leader_s   # gap relativo al líder
-
-    # Convertir timedeltas a float seconds para serialización segura
-    # (st.cache_data necesita tipos primitivos)
-    for r in rows:
-        r["time_s"] = float(r["time_td"].total_seconds()) if r["time_td"] is not None else None
-        r["best_s"] = float(r["best_td"].total_seconds()) if r["best_td"] is not None else None
-        del r["time_td"], r["best_td"]
-
-    return rows, is_race, SESSION_LABELS.get(stype, stype)
+def get_drivers(year, gp, stype):
     """Carga solo los nombres — serializable, usa cache_data."""
     try:
         # Carga liviana solo para obtener la lista de pilotos
@@ -1741,95 +1616,219 @@ def render_sidebar():
 #  CLASIFICACIÓN DE SESIÓN
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_standings(rows: list, is_race: bool, session_label: str) -> tuple:
+def build_standings(session, session_label: str) -> tuple:
     """
-    Tabla y grafico de clasificacion.
-    rows viene de load_session_standings() — floats puros, sin objetos FastF1.
+    Genera la tabla de clasificación completa de la sesión.
+    Retorna (df_standings, fig) donde fig es el gráfico de barras horizontales.
+
+    Lógica por tipo de sesión:
+    · Qualifying (Q)  → mejor vuelta de cada piloto
+    · Race (R)        → posición final + tiempo total / gap al líder
+    · FP1/FP2/FP3     → mejor vuelta de cada piloto
     """
+    try:
+        laps = session.laps.copy()
+    except Exception as e:
+        return pd.DataFrame(), None
+
+    is_race = session_label in ("Race", "Sprint")
+
+    rows = []
+
+    if is_race:
+        # Para la carrera usamos session.results si está disponible
+        try:
+            res = session.results
+            for _, row in res.iterrows():
+                drv  = row.get("Abbreviation", "???")
+                pos  = row.get("Position", None)
+                team = row.get("TeamName", "")
+                status = row.get("Status", "")
+                pts  = row.get("Points", 0)
+
+                # Tiempo / gap
+                try:
+                    t = row.get("Time")
+                    if hasattr(t, "total_seconds") and not pd.isna(t):
+                        gap_s = t.total_seconds()
+                        if pos == 1:
+                            time_str = _fmt_seconds(gap_s)
+                            gap_str  = "LÍDER"
+                        else:
+                            gap_str  = f"+{gap_s:.3f}s"
+                            time_str = gap_str
+                    else:
+                        time_str = str(status)
+                        gap_str  = str(status)
+                        gap_s    = 9999.0
+                except Exception:
+                    time_str = gap_str = str(status)
+                    gap_s    = 9999.0
+
+                # Mejor vuelta de carrera
+                drv_laps = laps[laps["Driver"] == drv]
+                best_lt  = "–"
+                if not drv_laps.empty:
+                    valid = drv_laps["LapTime"].dropna()
+                    if not valid.empty:
+                        best_lt = _fmt_seconds(valid.min().total_seconds())
+
+                rows.append({
+                    "POS": int(pos) if pos and not pd.isna(pos) else 99,
+                    "PILOTO": drv,
+                    "EQUIPO": team,
+                    "TIEMPO / GAP": time_str,
+                    "MEJOR VUELTA": best_lt,
+                    "PTS": int(pts) if pts and not pd.isna(pts) else 0,
+                    "STATUS": status,
+                    "_gap_s": gap_s,
+                })
+        except Exception:
+            is_race = False   # fallback a mejor vuelta
+
+    if not is_race:
+        # Qualifying / FP → mejor vuelta de cada piloto
+        for drv in laps["Driver"].unique():
+            drv_laps = laps[laps["Driver"] == drv]
+            valid    = drv_laps["LapTime"].dropna()
+            if valid.empty:
+                continue
+
+            best     = valid.min()
+            best_s   = best.total_seconds()
+            best_str = _fmt_seconds(best_s)
+
+            # Datos del piloto
+            try:
+                info = session.get_driver(drv)
+                drv_abbr = info.get("Abbreviation", drv)
+                team     = info.get("TeamName", "")
+            except Exception:
+                drv_abbr = drv
+                team     = ""
+
+            rows.append({
+                "POS": 0,       # se asigna al ordenar
+                "PILOTO": drv_abbr,
+                "EQUIPO": team,
+                "MEJOR VUELTA": best_str,
+                "TIEMPO / GAP": best_str,
+                "PTS": 0,
+                "STATUS": "",
+                "_gap_s": best_s,
+            })
+
+        # Ordenar por tiempo y asignar posición
+        rows.sort(key=lambda x: x["_gap_s"])
+        leader_s = rows[0]["_gap_s"] if rows else 0
+        for i, r in enumerate(rows):
+            r["POS"] = i + 1
+            gap = r["_gap_s"] - leader_s
+            r["TIEMPO / GAP"] = (
+                _fmt_seconds(r["_gap_s"]) if i == 0
+                else f"+{gap:.3f}s"
+            )
+
     if not rows:
         return pd.DataFrame(), None
 
-    def fmt(s):
-        if s is None: return "–"
-        s = float(s); m = int(s // 60); sec = s % 60
-        return f"{m}:{sec:06.3f}"
+    df = pd.DataFrame(rows).sort_values("POS").reset_index(drop=True)
 
-    table_rows = []
-    for r in rows:
-        pos   = r["pos"]; drv = r["driver"]; team = r["team"]
-        gap_s = r["gap_s"]; best_s = r["best_s"]
-        pts   = r["pts"]; status = r["status"]
+    # ── Gráfico de barras horizontales ────────────────────────────────────────
+    # Mostrar solo tiempos válidos (excluir DNF/DNS con gap_s=9999)
+    df_plot = df[df["_gap_s"] < 9000].copy()
 
-        if is_race:
-            if pos == 1:
-                time_disp = fmt(r.get("time_s")) if r.get("time_s") else status
-                gap_disp  = "LIDER"
-            else:
-                gap_disp  = f"+{gap_s:.3f}s" if gap_s < 9000 else status
-                time_disp = gap_disp
-        else:
-            time_disp = fmt(best_s) if pos == 1 else f"+{gap_s:.3f}s"
-            gap_disp  = time_disp
+    # Colores por equipo
+    TEAM_COLORS_MAP = {
+        "mercedes":    "#27F4D2", "ferrari":     "#E8002D",
+        "red bull":    "#3671C6", "mclaren":     "#FF8000",
+        "aston martin":"#229971", "alpine":      "#FF87BC",
+        "williams":    "#64C4FF", "rb":          "#6692FF",
+        "kick sauber": "#52E252", "sauber":      "#52E252",
+        "haas":        "#B6BABD", "audi":        "#C8F026",
+        "cadillac":    "#A50F2D",
+    }
 
-        table_rows.append({
-            "POS":          pos,
-            "PILOTO":       drv,
-            "EQUIPO":       team,
-            "TIEMPO / GAP": time_disp,
-            "MEJOR VUELTA": fmt(best_s),
-            "PTS":          pts if is_race else "–",
-            "STATUS":       status if is_race else "",
-            "_gap_plot":    gap_s if gap_s < 9000 else None,
-            "_color":       r["color"],
-        })
+    def team_color(team_name):
+        tl = str(team_name).lower()
+        for k, v in TEAM_COLORS_MAP.items():
+            if k in tl:
+                return v
+        return "#566A7F"
 
-    df       = pd.DataFrame(table_rows).sort_values("POS").reset_index(drop=True)
-    df_plot  = df[df["_gap_plot"].notna()].copy()
-    base     = df_plot["_gap_plot"].values.min()
-    bar_vals = df_plot["_gap_plot"].values - base + 0.001
-    pilots   = [f"P{int(row['POS'])}  {row['PILOTO']}" for _, row in df_plot.iterrows()]
-    colors   = df_plot["_color"].tolist()
+    colors   = [team_color(t) for t in df_plot["EQUIPO"]]
+    pilots   = [f"P{r['POS']} {r['PILOTO']}" for _, r in df_plot.iterrows()]
+    times    = df_plot["_gap_s"].values
+    # Normalizar para la barra (offset desde el mínimo para que todas empiecen visible)
+    base     = times.min()
+    bar_vals = times - base + 0.001
 
     fig = go.Figure()
+
     fig.add_trace(go.Bar(
-        x=bar_vals, y=pilots, orientation="h",
-        marker=dict(color=colors, line=dict(width=0)),
+        x=bar_vals,
+        y=pilots,
+        orientation="h",
+        marker=dict(
+            color=colors,
+            line=dict(color="rgba(0,0,0,0)", width=0),
+        ),
         customdata=list(zip(
             df_plot["TIEMPO / GAP"].values,
+            df_plot["MEJOR VUELTA"].values if "MEJOR VUELTA" in df_plot else [""] * len(df_plot),
             df_plot["EQUIPO"].values,
-            df_plot["MEJOR VUELTA"].values,
         )),
         hovertemplate=(
             "<b>%{y}</b><br>"
-            "%{customdata[0]}<br>"
-            "Mejor vuelta: %{customdata[2]}<br>"
-            "Equipo: %{customdata[1]}<extra></extra>"
+            "Tiempo: %{customdata[0]}<br>"
+            "Equipo: %{customdata[2]}<extra></extra>"
         ),
         text=df_plot["TIEMPO / GAP"].values,
         textposition="outside",
-        textfont=dict(family="Share Tech Mono, monospace", color="#C8D6E5", size=10),
+        textfont=dict(family="Share Tech Mono, monospace",
+                      color="#C8D6E5", size=10),
     ))
+
     fig.update_layout(**pb(
-        height=max(420, len(df_plot) * 26 + 80),
-        paper_bgcolor="#070B0F", plot_bgcolor="#090D13",
-        margin=dict(l=130, r=130, t=46, b=36),
+        height=max(400, len(df_plot) * 28 + 100),
+        paper_bgcolor="#070B0F",
+        plot_bgcolor="#090D13",
+        margin=dict(l=110, r=120, t=50, b=40),
         title=dict(
-            text=f"CLASIFICACION — {session_label.upper()}  ·  tiempos directos de FastF1",
-            font=dict(family="Share Tech Mono, monospace", color="#566A7F", size=10), x=0,
+            text=f"CLASIFICACIÓN — {session_label.upper()}",
+            font=dict(family="Share Tech Mono, monospace",
+                      color="#566A7F", size=11),
+            x=0,
         ),
-        xaxis=dict(**AX, title_text="Gap al lider (s)",
-                   title_font=dict(color="#566A7F", size=10), tickformat=".3f"),
-        yaxis=dict(**AX, autorange="reversed"),
+        xaxis=dict(
+            **AX,
+            title_text="Diferencia respecto al líder (s)",
+            title_font=dict(color="#566A7F", size=10),
+            tickformat=".3f",
+        ),
+        yaxis=dict(
+            **AX,
+            autorange="reversed",   # P1 arriba
+        ),
         showlegend=False,
         hovermode="y unified",
-        hoverlabel=dict(bgcolor="#0C1018", bordercolor="#1A2535",
-                        font=dict(family="Share Tech Mono, monospace",
-                                  color="#C8D6E5", size=11)),
+        hoverlabel=dict(
+            bgcolor="#0C1018", bordercolor="#1A2535",
+            font=dict(family="Share Tech Mono, monospace",
+                      color="#C8D6E5", size=11),
+        ),
     ))
-    fig.update_yaxes(tickfont=dict(family="Orbitron, monospace", color="#C8D6E5", size=9))
-    df = df.drop(columns=["_gap_plot", "_color"])
+
+    # Quitar columna interna antes de devolver
+    df = df.drop(columns=["_gap_s"])
+    fig.update_yaxes(tickfont=dict(family="Orbitron, monospace",
+                                   color="#C8D6E5", size=10))
     return df, fig
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     render_header()
@@ -1955,54 +1954,29 @@ def main():
             st.info("💡 Tip: Qualifying sessions have the richest telemetry.")
             return
 
-    # ── Clasificación previa (sin necesidad de cargar telemetría) ─────────────
-    # Se muestra siempre que haya año + GP + sesión seleccionados
-    st.markdown('<div class="sec-label">🏆  CLASIFICACIÓN — cargada automáticamente</div>',
-                unsafe_allow_html=True)
-    try:
-        with st.spinner("Cargando clasificación..."):
-            st_rows, st_is_race, st_label = load_session_standings(
-                year, gp_name, sess)
-        if st_rows:
-            df_pre, fig_pre = build_standings(st_rows, st_is_race, st_label)
-            st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
-            st.plotly_chart(fig_pre, use_container_width=True, config=MINI_CFG)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            with st.expander("📋  Tabla completa"):
-                show_cols = ["POS","PILOTO","EQUIPO","TIEMPO / GAP","MEJOR VUELTA"]
-                if st_is_race:
-                    show_cols += ["PTS","STATUS"]
-                show_cols = [c for c in show_cols if c in df_pre.columns]
-                st.dataframe(df_pre[show_cols], use_container_width=True,
-                             hide_index=True, height=500)
-                st.download_button(
-                    "⬇  Descargar CSV",
-                    df_pre[show_cols].to_csv(index=False).encode("utf-8"),
-                    file_name=f"clasificacion_{year}_{gp_name.replace(' ','_')}_{sess}.csv",
-                    mime="text/csv",
-                )
-        else:
-            st.info("No hay datos de clasificación disponibles para esta sesión todavía.")
-    except Exception as e:
-        st.info(f"Clasificación no disponible aún para esta sesión. ({e})")
-
-    st.divider()
-
-    # ── Welcome screen (sin telemetría cargada) ───────────────────────────────
+    # ── Welcome screen ────────────────────────────────────────────────────────
     if st.session_state.tdata is None:
         st.markdown("""
         <div style="display:flex;flex-direction:column;align-items:center;
-                    text-align:center;padding:32px 20px">
-          <div style="font-size:48px;margin-bottom:12px">📡</div>
-          <div style="font-family:'Orbitron',sans-serif;font-size:18px;font-weight:900;
-                      color:#1A2535;letter-spacing:3px;text-transform:uppercase">
-            TELEMETRÍA NO CARGADA
-          </div>
+                    justify-content:center;min-height:62vh;text-align:center;padding:48px 20px">
+          <div style="font-size:68px;margin-bottom:20px">🏎️</div>
+          <div style="font-family:'Orbitron',sans-serif;font-size:24px;font-weight:900;
+                      color:#1A2535;letter-spacing:4px;text-transform:uppercase">NO DATA LOADED</div>
           <div style="font-family:'Share Tech Mono',monospace;font-size:11px;
-                      color:#2E3E50;margin-top:10px;line-height:2.2">
-            Seleccioná dos pilotos y presioná ⚡ LOAD TELEMETRY<br>
-            para activar los tabs de telemetría, track map y análisis.
+                      color:#2E3E50;margin-top:14px;line-height:2.2;max-width:420px">
+            SELECT SEASON · GP · SESSION · TWO DRIVERS<br>THEN CLICK ⚡ LOAD TELEMETRY
+          </div>
+          <div style="margin-top:40px;padding:16px 28px;border:1px solid #1A2535;border-radius:6px;
+                      background:#0C1018;font-family:'Share Tech Mono',monospace;font-size:9px;
+                      color:#2E3E50;line-height:2.3;text-align:left">
+            ◆  6-CHANNEL SYNCHRONIZED TELEMETRY<br>
+            ◆  DISTANCE-BASED AXIS (not time)<br>
+            ◆  SCIPY INTERPOLATION TO COMMON GRID<br>
+            ◆  CUMULATIVE Δ TIME CALCULATION<br>
+            ◆  SPEED HEATMAP TRACK MAP<br>
+            ◆  AUTOMATIC BRAKING ZONE DETECTION<br>
+            ◆  LAP PACE PROGRESSION CHART<br>
+            ◆  SELF-CONTAINED HTML REPORT EXPORT
           </div>
         </div>""", unsafe_allow_html=True)
         return
@@ -2037,7 +2011,10 @@ def main():
         "⬇  EXPORT",
     ])
 
-    MINI_CFG_LOCAL = MINI_CFG   # alias local para claridad — ya definidos globalmente
+    CHART_CFG = {"scrollZoom": True, "displayModeBar": True,
+                 "modeBarButtonsToRemove": ["autoScale2d","lasso2d","select2d"],
+                 "displaylogo": False}
+    MINI_CFG  = {"displayModeBar": False, "displaylogo": False}
 
     # ── TAB 1: Telemetry ──────────────────────────────────────────────────────
     with t_tel:
@@ -2472,53 +2449,77 @@ def main():
         st.markdown('<div class="sec-label">CLASIFICACIÓN DE LA SESIÓN</div>',
                     unsafe_allow_html=True)
 
-        # Reusar los datos ya cargados por load_session_standings (en cache)
+        # Recuperar sesión desde cache_resource
+        session_obj_st = None
         try:
-            st_rows, st_is_race, st_label = load_session_standings(
-                d["year"], d["gp_name"], d.get("session_key","").split("||")[-1]
-                if d.get("session_key") else "Q"
-            )
-            df_st, fig_st = build_standings(st_rows, st_is_race, st_label)
-        except Exception as e:
-            df_st = pd.DataFrame(); fig_st = None
-            st.error(f"Error: {e}")
+            sk = d.get("session_key", "")
+            if sk:
+                parts = sk.split("||")
+                session_obj_st = load_session(int(parts[0]), parts[1], parts[2])
+        except Exception:
+            session_obj_st = None
 
-        if fig_st is not None:
-            st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
-            st.plotly_chart(fig_st, use_container_width=True, config=MINI_CFG)
-            st.markdown("</div>", unsafe_allow_html=True)
+        if session_obj_st is None:
+            st.warning("Sesión no disponible — recargá los datos.")
+        else:
+            with st.spinner("Calculando clasificación..."):
+                try:
+                    df_st, fig_st = build_standings(
+                        session_obj_st, d.get("session", ""))
+                except Exception as e:
+                    df_st = pd.DataFrame()
+                    fig_st = None
+                    st.error(f"Error generando clasificación: {e}")
 
-        if not df_st.empty:
-            st.markdown('<div class="sec-label">TABLA COMPLETA</div>',
-                        unsafe_allow_html=True)
+            if fig_st is not None:
+                st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
+                st.plotly_chart(fig_st, use_container_width=True,
+                               config=MINI_CFG)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            def highlight_drivers(row):
-                if row["PILOTO"] == d1:
-                    return ["background-color:#E8002D20;color:#E8002D"] * len(row)
-                elif row["PILOTO"] == d2:
-                    return ["background-color:#00D4FF20;color:#00D4FF"] * len(row)
-                return [""] * len(row)
+            if not df_st.empty:
+                st.markdown('<div class="sec-label">TABLA COMPLETA</div>',
+                            unsafe_allow_html=True)
 
-            show_cols = ["POS","PILOTO","EQUIPO","TIEMPO / GAP","MEJOR VUELTA"]
-            if st_is_race:
-                show_cols += ["PTS","STATUS"]
-            show_cols = [c for c in show_cols if c in df_st.columns]
+                # Resaltar los dos pilotos seleccionados
+                def highlight_drivers(row):
+                    if row["PILOTO"] == d1:
+                        return [f"background-color: #E8002D20; color: #E8002D"] * len(row)
+                    elif row["PILOTO"] == d2:
+                        return [f"background-color: #00D4FF20; color: #00D4FF"] * len(row)
+                    return [""] * len(row)
 
-            styled = (
-                df_st[show_cols].style
-                .apply(highlight_drivers, axis=1)
-                .set_properties(**{"font-family": "Share Tech Mono, monospace",
-                                   "font-size": "12px"})
-            )
-            st.dataframe(styled, use_container_width=True,
-                         hide_index=True, height=600)
-            st.download_button(
-                "⬇  Descargar clasificación CSV",
-                df_st[show_cols].to_csv(index=False).encode("utf-8"),
-                file_name=(f"clasificacion_{d['year']}_"
-                           f"{d['gp_name'].replace(' ','_')}.csv"),
-                mime="text/csv",
-            )
+                # Columnas a mostrar según tipo de sesión
+                show_cols = ["POS","PILOTO","EQUIPO","TIEMPO / GAP"]
+                if "MEJOR VUELTA" in df_st.columns and d.get("session") != "Race":
+                    show_cols.append("MEJOR VUELTA")
+                if "PTS" in df_st.columns and d.get("session") == "Race":
+                    show_cols += ["MEJOR VUELTA","PTS","STATUS"]
+
+                show_cols = [c for c in show_cols if c in df_st.columns]
+
+                styled = (
+                    df_st[show_cols]
+                    .style
+                    .apply(highlight_drivers, axis=1)
+                    .set_properties(**{
+                        "font-family": "Share Tech Mono, monospace",
+                        "font-size":   "12px",
+                    })
+                    .format({"POS": "{:.0f}", "PTS": "{:.0f}"},
+                            na_rep="–")
+                )
+                st.dataframe(styled, use_container_width=True,
+                             hide_index=True, height=600)
+
+                st.download_button(
+                    "⬇  Descargar clasificación CSV",
+                    df_st[show_cols].to_csv(index=False).encode("utf-8"),
+                    file_name=(f"clasificacion_{d['year']}_"
+                               f"{d['gp_name'].replace(' ','_')}_"
+                               f"{d.get('session','')}.csv"),
+                    mime="text/csv",
+                )
 
     st.markdown("<br><br>", unsafe_allow_html=True)
 
