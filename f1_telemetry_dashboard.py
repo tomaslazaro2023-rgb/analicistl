@@ -1809,8 +1809,6 @@ def build_standings(session, session_label: str) -> tuple:
         yaxis=dict(
             **AX,
             autorange="reversed",   # P1 arriba
-            tickfont=dict(family="Orbitron, monospace",
-                          color="#C8D6E5", size=10),
         ),
         showlegend=False,
         hovermode="y unified",
@@ -1823,7 +1821,8 @@ def build_standings(session, session_label: str) -> tuple:
 
     # Quitar columna interna antes de devolver
     df = df.drop(columns=["_gap_s"])
-
+    fig.update_yaxes(tickfont=dict(family="Orbitron, monospace",
+                                   color="#C8D6E5", size=10))
     return df, fig
 
 
