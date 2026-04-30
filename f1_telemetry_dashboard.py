@@ -273,6 +273,14 @@ SESSION_LABELS = {
     "Q": "Qualifying", "R": "Race",
 }
 
+# Plotly chart config dicts — globales para poder usarlos antes de main()
+CHART_CFG = {
+    "scrollZoom": True, "displayModeBar": True,
+    "modeBarButtonsToRemove": ["autoScale2d","lasso2d","select2d"],
+    "displaylogo": False,
+}
+MINI_CFG = {"displayModeBar": False, "displaylogo": False}
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATA LOADING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2029,10 +2037,7 @@ def main():
         "⬇  EXPORT",
     ])
 
-    CHART_CFG = {"scrollZoom": True, "displayModeBar": True,
-                 "modeBarButtonsToRemove": ["autoScale2d","lasso2d","select2d"],
-                 "displaylogo": False}
-    MINI_CFG  = {"displayModeBar": False, "displaylogo": False}
+    MINI_CFG_LOCAL = MINI_CFG   # alias local para claridad — ya definidos globalmente
 
     # ── TAB 1: Telemetry ──────────────────────────────────────────────────────
     with t_tel:
