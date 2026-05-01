@@ -221,7 +221,126 @@ section[data-testid="stSidebar"] .stSelectbox > div > div {
 #MainMenu, footer, header { visibility:hidden; }
 .stDeployButton { display:none; }
 div[data-testid="stDecoration"] { display:none; }
+
+/* ── Ocultar la flechita nativa de Streamlit que colapsa el sidebar ──
+   El problema: si el usuario la toca, el sidebar desaparece y no hay
+   forma visible de volver a abrirlo sin recargar la página.
+   Solución: ocultamos esa flecha y ponemos nuestro propio botón. ── */
+button[data-testid="collapsedControl"] {
+    display: none !important;
+}
+section[data-testid="stSidebarCollapseButton"] {
+    display: none !important;
+}
+/* También ocultar el chevron interno del sidebar */
+button[kind="headerNoPadding"] {
+    display: none !important;
+}
+
+/* ── Botón toggle flotante siempre visible ── */
+#sidebar-toggle-btn {
+    position: fixed;
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    z-index: 999999;
+    background: #E8002D;
+    color: #fff;
+    border: none;
+    border-radius: 0 6px 6px 0;
+    width: 20px;
+    height: 64px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: 'Share Tech Mono', monospace;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 1px;
+    opacity: 0.85;
+    transition: opacity 0.2s, width 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    box-shadow: 2px 0 8px rgba(232,0,45,0.3);
+}
+#sidebar-toggle-btn:hover {
+    opacity: 1;
+    width: 24px;
+}
 </style>
+""", unsafe_allow_html=True)
+
+# ── Botón toggle flotante (inyectado via JS para interactuar con el DOM) ──────
+st.markdown("""
+<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="Mostrar/ocultar panel">
+  &#9776;
+</button>
+
+<script>
+function toggleSidebar() {
+    // Selector del sidebar de Streamlit
+    const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+    const btn     = window.parent.document.getElementById('sidebar-toggle-btn');
+
+    if (!sidebar) return;
+
+    // Detectar si está colapsado buscando el botón nativo de Streamlit
+    const nativeBtn = window.parent.document.querySelector(
+        'button[data-testid="collapsedControl"]'
+    );
+    if (nativeBtn) {
+        nativeBtn.click();
+        return;
+    }
+
+    // Alternativa: toggle clase collapsed
+    const isCollapsed = sidebar.getAttribute('aria-expanded') === 'false'
+                     || sidebar.style.marginLeft === '-100%'
+                     || sidebar.offsetWidth < 50;
+
+    if (isCollapsed) {
+        // Forzar apertura clickeando el control nativo si existe
+        const controls = window.parent.document.querySelectorAll(
+            'button[kind="headerNoPadding"], [data-testid="stSidebarCollapseButton"] button'
+        );
+        controls.forEach(c => c.click());
+
+        // Fallback: restaurar estilos directamente
+        sidebar.style.marginLeft = '0';
+        sidebar.style.visibility = 'visible';
+        sidebar.style.width = '';
+        if (btn) btn.textContent = '☰';
+    } else {
+        // Solo cambiar el ícono — NO colapsamos (ese es el punto)
+        if (btn) btn.textContent = '☰';
+    }
+}
+
+// Observar cambios en el sidebar para actualizar el ícono del botón
+(function() {
+    const observer = new MutationObserver(function() {
+        const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+        const btn     = window.parent.document.getElementById('sidebar-toggle-btn');
+        if (!sidebar || !btn) return;
+
+        const collapsed = sidebar.offsetWidth < 80;
+        btn.style.background = collapsed ? '#39D353' : '#E8002D';
+        btn.title = collapsed ? 'Abrir panel ←' : 'Panel abierto';
+    });
+
+    // Intentar observar después de que el DOM esté listo
+    setTimeout(function() {
+        const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+        if (sidebar) {
+            observer.observe(sidebar, {
+                attributes: true,
+                attributeFilter: ['style', 'class', 'aria-expanded']
+            });
+        }
+    }, 1000);
+})();
+</script>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
