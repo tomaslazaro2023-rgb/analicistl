@@ -391,11 +391,22 @@ def load_schedule(year):
     return s[["EventName","Country","RoundNumber"]].reset_index(drop=True)
 
 
-# IMPORTANTE: usar cache_resource (no cache_data) para objetos FastF1
-# que no son serializables — cache_data intenta picklearlos y corrompe
-# el estado de Streamlit en la segunda consulta.
+# DOS funciones separadas con claves de cache distintas:
+# - load_session_light: solo metadatos/pilotos (rápida, para el sidebar)
+# - load_session:       telemetría completa (pesada, para análisis)
+# NUNCA pueden compartir la misma clave de cache_resource.
+
+@st.cache_resource(show_spinner=False)
+def load_session_light(year, gp, stype):
+    """Carga liviana — solo para obtener lista de pilotos en el sidebar."""
+    sess = fastf1.get_session(year, gp, stype)
+    sess.load(telemetry=False, laps=False, weather=False, messages=False)
+    return sess
+
+
 @st.cache_resource(show_spinner=False)
 def load_session(year, gp, stype):
+    """Carga completa con telemetría — para análisis."""
     sess = fastf1.get_session(year, gp, stype)
     sess.load(telemetry=True, laps=True, weather=False, messages=False)
     return sess
@@ -403,14 +414,12 @@ def load_session(year, gp, stype):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_drivers(year, gp, stype):
-    """Carga solo los nombres — serializable, usa cache_data."""
+    """Devuelve lista de abreviaturas de pilotos — usa la carga liviana."""
     try:
-        sess_light = fastf1.get_session(year, gp, stype)
-        sess_light.load(telemetry=False, laps=False,
-                        weather=False, messages=False)
+        sess = load_session_light(year, gp, stype)
         return sorted([
-            sess_light.get_driver(d)["Abbreviation"]
-            for d in sess_light.drivers
+            sess.get_driver(d)["Abbreviation"]
+            for d in sess.drivers
         ])
     except Exception:
         return ["VER","PER","LEC","SAI","HAM","RUS","NOR","PIA",
