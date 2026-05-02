@@ -22,7 +22,7 @@ pip install streamlit fastf1 plotly pandas numpy scipy
 
 Ejecución:
 streamlit run f1_telemetry_dashboard.py
-“””
+"""
 
 import warnings
 warnings.filterwarnings(“ignore”)
