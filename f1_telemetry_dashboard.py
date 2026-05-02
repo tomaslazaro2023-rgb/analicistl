@@ -1,4 +1,4 @@
-
+"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║        F1 TELEMETRY DASHBOARD v2 — MoTeC-Style Pro Edition                 ║
 ║        FastF1 + Streamlit + Plotly  ·  Temporada 2026 (sin DRS)            ║
