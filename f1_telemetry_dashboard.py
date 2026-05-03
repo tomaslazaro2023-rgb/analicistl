@@ -583,18 +583,47 @@ def lap_to_s(td):
 #  PLOT BUILDERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta):
-    row_h = [0.20, 0.18, 0.16, 0.14, 0.16, 0.16]
-    # Título del panel delta con convención de signo explícita
+def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
+                          pos1=None, pos2=None):
+    """
+    6 canales de telemetría sincronizados + mini track map al pie.
+    pos1/pos2: DataFrames con columnas X,Y (GPS). Si están disponibles,
+    se dibuja el circuito debajo del eje de distancia como referencia espacial.
+    """
+    has_map = (pos1 is not None and not pos1.empty) or \
+              (pos2 is not None and not pos2.empty)
+
+    # Con mapa: 7 filas; sin mapa: 6 filas
     delta_title = (f"Δ TIME (s)  ·  positivo = {d1_name} más rápido  "
                    f"·  negativo = {d2_name} más rápido")
-    titles = [delta_title, "SPEED (km/h)", "THROTTLE / BRAKE (%)", "GEAR", "STEERING (°)", "RPM"]
-    fig = make_subplots(rows=6, cols=1, shared_xaxes=True,
-                        row_heights=row_h, subplot_titles=titles, vertical_spacing=0.035)
+    titles = [delta_title, "SPEED (km/h)", "THROTTLE / BRAKE (%)",
+              "GEAR", "STEERING (°)", "RPM"]
+    if has_map:
+        titles.append("TRACK MAP — referencia espacial")
 
-    # Delta sign convention: delta = cumsum(dt2) - cumsum(dt1)
-    # delta > 0  →  d2 takes MORE time  →  d1 is FASTER (gaining on d2)
-    # delta < 0  →  d2 takes LESS time  →  d2 is FASTER (gaining on d1)
+    if has_map:
+        row_h  = [0.155, 0.140, 0.120, 0.105, 0.120, 0.120, 0.14]
+        n_rows = 7
+        # Las primeras 6 filas comparten eje X (distancia)
+        # La fila 7 (track map) tiene sus propias coordenadas GPS
+        fig = make_subplots(
+            rows=n_rows, cols=1,
+            shared_xaxes=False,   # gestionamos manualmente
+            row_heights=row_h,
+            subplot_titles=titles,
+            vertical_spacing=0.028,
+        )
+        # Vincular manualmente los ejes X de las filas 1-6
+        for i in range(2, 7):
+            fig.update_xaxes(matches="x", row=i, col=1)
+    else:
+        row_h  = [0.20, 0.18, 0.16, 0.14, 0.16, 0.16]
+        n_rows = 6
+        fig = make_subplots(rows=n_rows, cols=1, shared_xaxes=True,
+                            row_heights=row_h, subplot_titles=titles,
+                            vertical_spacing=0.030)
+
+    # ── Delta ──────────────────────────────────────────────────────────────
     pos_d = np.where(delta >= 0, delta, np.nan)
     neg_d = np.where(delta <  0, delta, np.nan)
     fig.add_trace(go.Scatter(x=dist, y=pos_d, mode="lines",
@@ -610,53 +639,126 @@ def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta):
         showlegend=False, hoverinfo="skip"), row=1, col=1)
     fig.add_hline(y=0, line=dict(color="#1E2E40", width=1, dash="dot"), row=1, col=1)
 
-    # Speed
+    # ── Speed ──────────────────────────────────────────────────────────────
     for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
         fig.add_trace(go.Scatter(x=dist, y=tel["Speed"], mode="lines",
             line=dict(color=col, width=1.8), name=name,
             hovertemplate="%{y:.0f} km/h<extra></extra>"), row=2, col=1)
 
-    # Throttle & Brake
+    # ── Throttle & Brake ───────────────────────────────────────────────────
     for tel, prefix, col, dash in [
         (t1, d1_name, D1, "solid"), (t2, d2_name, D2, "solid"),
         (t1, d1_name, "#FF6B35", "dash"), (t2, d2_name, "#FFB347", "dash"),
     ]:
         is_brake = dash == "dash"
-        data = tel["Brake"] * 100 if is_brake else tel["Throttle"]
+        data  = tel["Brake"] * 100 if is_brake else tel["Throttle"]
         label = f"BRK {prefix}" if is_brake else f"THR {prefix}"
         fig.add_trace(go.Scatter(x=dist, y=data, mode="lines",
             line=dict(color=col, width=1.4, dash=dash), name=label,
             showlegend=False, hovertemplate="%{y:.0f}%<extra></extra>"), row=3, col=1)
 
-    # Gear
+    # ── Gear ───────────────────────────────────────────────────────────────
     for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
         fig.add_trace(go.Scatter(x=dist, y=tel["nGear"], mode="lines",
             line=dict(color=col, width=1.8, shape="hv"), name=name,
             showlegend=False, hovertemplate="G%{y:.0f}<extra></extra>"), row=4, col=1)
 
-    # Steering
+    # ── Steering ───────────────────────────────────────────────────────────
     for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
         fig.add_trace(go.Scatter(x=dist, y=tel["Steering"], mode="lines",
             line=dict(color=col, width=1.4), name=name,
             showlegend=False, hovertemplate="%{y:.1f}°<extra></extra>"), row=5, col=1)
     fig.add_hline(y=0, line=dict(color="#1E2E40", width=1, dash="dot"), row=5, col=1)
 
-    # RPM
+    # ── RPM ────────────────────────────────────────────────────────────────
     for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
         if "RPM" in tel.columns and tel["RPM"].notna().any():
             fig.add_trace(go.Scatter(x=dist, y=tel["RPM"], mode="lines",
                 line=dict(color=col, width=1.4), name=name,
                 showlegend=False, hovertemplate="%{y:.0f} RPM<extra></extra>"), row=6, col=1)
 
-    fig.update_layout(**pb(height=980, showlegend=True,
+    # ── Mini Track Map (fila 7) ────────────────────────────────────────────
+    if has_map:
+        pos_src  = pos1 if (pos1 is not None and not pos1.empty) else pos2
+        spd_src  = t1["Speed"].values if (pos1 is not None and not pos1.empty) \
+                   else t2["Speed"].values
+        col_line = D1 if (pos1 is not None and not pos1.empty) else D2
+
+        try:
+            x = uniform_filter1d(pos_src["X"].values.astype(float), size=5)
+            y = uniform_filter1d(pos_src["Y"].values.astype(float), size=5)
+            n = len(x)
+
+            # Interpolar velocidad a la misma cantidad de puntos GPS
+            spd = np.interp(
+                np.linspace(0, 1, n),
+                np.linspace(0, 1, len(spd_src)),
+                spd_src,
+            )
+
+            SPEED_SCALE = [
+                [0.0, "#2E0000"], [0.25, "#E8002D"],
+                [0.5, "#FFD700"], [0.75, "#39D353"],
+                [1.0, "#00D4FF"],
+            ]
+
+            # Contorno del circuito
+            fig.add_trace(go.Scatter(
+                x=x, y=y, mode="lines",
+                line=dict(color="#1A2535", width=10),
+                showlegend=False, hoverinfo="skip",
+            ), row=7, col=1)
+
+            # Heatmap de velocidad (idéntico al tab Track Map)
+            fig.add_trace(go.Scatter(
+                x=x, y=y, mode="markers",
+                marker=dict(
+                    size=3,
+                    color=spd,
+                    colorscale=SPEED_SCALE,
+                    showscale=True,
+                    colorbar=dict(
+                        thickness=8, len=0.07, y=0.04, yanchor="bottom",
+                        title=dict(text="km/h",
+                                   font=dict(family="Share Tech Mono",
+                                             color="#566A7F", size=8)),
+                        tickfont=dict(family="Share Tech Mono",
+                                      color="#566A7F", size=8),
+                        bgcolor="rgba(0,0,0,0)", bordercolor="#1A2535",
+                    ),
+                    cmin=float(spd.min()),
+                    cmax=float(spd.max()),
+                ),
+                showlegend=False,
+                hovertemplate="Speed: %{marker.color:.0f} km/h<extra></extra>",
+            ), row=7, col=1)
+
+        except Exception:
+            pass   # Si no hay GPS, la fila queda vacía sin error
+
+    # ── Layout global ──────────────────────────────────────────────────────
+    total_h = 1060 if has_map else 980
+    fig.update_layout(**pb(height=total_h, showlegend=True,
                            margin=dict(l=60, r=18, t=44, b=46)))
-    for i in range(1, 7):
+
+    for i in range(1, n_rows + 1):
         fig.update_xaxes(**AX, row=i, col=1)
         fig.update_yaxes(**AX, row=i, col=1)
+
+    # Eje X de la última fila de datos = distancia
     fig.update_xaxes(title_text="Distance (m)",
-                     title_font=dict(color="#2E3E50", size=10), row=6, col=1)
+                     title_font=dict(color="#2E3E50", size=10),
+                     row=n_rows if not has_map else 6, col=1)
+
+    # Track map: ambos ejes ocultos, proporciones correctas
+    if has_map:
+        fig.update_xaxes(visible=False, row=7, col=1)
+        fig.update_yaxes(visible=False, scaleanchor="x7",
+                         scaleratio=1, row=7, col=1)
+
     for ann in fig.layout.annotations:
-        ann.update(font=dict(family="Share Tech Mono, monospace", color="#2E3E50", size=9),
+        ann.update(font=dict(family="Share Tech Mono, monospace",
+                             color="#2E3E50", size=9),
                    xanchor="left", x=0.0)
     return fig
 
@@ -1418,7 +1520,8 @@ def generate_report(d):
     dist = d["common_dist"]; t1 = d["t1"]; t2 = d["t2"]; delta = d["delta"]
 
     charts = {
-        "Telemetry": build_main_telemetry(dist, t1, t2, d1, d2, delta),
+        "Telemetry": build_main_telemetry(dist, t1, t2, d1, d2, delta,
+                                           pos1=d.get("pos1"), pos2=d.get("pos2")),
         "Speed Distribution": build_speed_histogram(t1, t2, d1, d2),
         "Gear Usage": build_gear_usage(t1, t2, d1, d2),
         "Throttle Efficiency": build_throttle_scatter(t1, t2, d1, d2),
@@ -2231,7 +2334,8 @@ def main():
                     unsafe_allow_html=True)
         st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
         st.plotly_chart(
-            build_main_telemetry(d["dist"], d["t1"], d["t2"], d1, d2, d["delta"]),
+            build_main_telemetry(d["dist"], d["t1"], d["t2"], d1, d2, d["delta"],
+                                  pos1=d.get("pos1"), pos2=d.get("pos2")),
             use_container_width=True, config=CHART_CFG)
         st.markdown("</div>", unsafe_allow_html=True)
 
