@@ -427,6 +427,31 @@ def get_drivers(year, gp, stype):
                 "MAG","HUL","BOT","ZHO"]
 
 
+def get_circuit_info(session):
+    """
+    Devuelve (corners_df, sector_distances) desde FastF1.
+    corners_df: columnas Number, Letter, Distance, X, Y
+    sector_distances: [dist_end_s1, dist_end_s2] en metros
+    """
+    corners_df = pd.DataFrame()
+    sector_dists = []
+    try:
+        ci = session.get_circuit_info()
+        if hasattr(ci, "corners") and ci.corners is not None:
+            corners_df = ci.corners.copy()
+        # Distancias de fin de sector desde marshal_sectors si existe
+        if hasattr(ci, "marshal_sectors") and ci.marshal_sectors is not None:
+            ms = ci.marshal_sectors
+            # marshal_sectors tiene Distance acumulada de inicio de cada sector
+            # El fin del S1 = inicio del S2, fin del S2 = inicio del S3
+            dists = sorted(ms["Distance"].tolist())
+            if len(dists) >= 2:
+                sector_dists = [dists[1], dists[2]] if len(dists) >= 3 else [dists[1]]
+    except Exception:
+        pass
+    return corners_df, sector_dists
+
+
 def get_fastest_lap(session, driver):
     laps = session.laps.pick_drivers(driver)
     if laps.empty:
@@ -584,7 +609,8 @@ def lap_to_s(td):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
-                          pos1=None, pos2=None):
+                          pos1=None, pos2=None,
+                          corners=None, sector_dists=None):
     """
     6 canales de telemetría sincronizados + mini track map al pie.
     pos1/pos2: DataFrames con columnas X,Y (GPS). Si están disponibles,
@@ -735,6 +761,74 @@ def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
 
         except Exception:
             pass   # Si no hay GPS, la fila queda vacía sin error
+
+    # ── Líneas verticales de sectores (en todos los paneles de telemetría) ──
+    if sector_dists:
+        sector_labels = ["S1|S2", "S2|S3"]
+        sector_colors = ["#FFD700", "#39D353"]
+        for i, (sd, slbl, scol) in enumerate(
+                zip(sector_dists, sector_labels, sector_colors)):
+            if sd > dist.max():
+                continue
+            # Línea en todas las filas de telemetría (1 a 6, no la 7 del track map)
+            for row_i in range(1, 7 if has_map else n_rows + 1):
+                fig.add_vline(
+                    x=sd,
+                    line=dict(color=scol, width=1.2, dash="dot"),
+                    row=row_i, col=1,
+                )
+            # Anotación solo en el panel Delta (fila 1)
+            fig.add_annotation(
+                x=sd, y=1.0, xref="x", yref="paper",
+                text=slbl,
+                showarrow=False,
+                font=dict(family="Share Tech Mono, monospace",
+                          color=scol, size=8),
+                bgcolor="rgba(7,11,15,0.75)",
+                bordercolor=scol, borderwidth=1, borderpad=2,
+                yanchor="top",
+            )
+
+    # ── Números de curva en el track map ──────────────────────────────────
+    if has_map and corners:
+        try:
+            x_raw = uniform_filter1d(pos_src["X"].values.astype(float), size=5)
+            y_raw = uniform_filter1d(pos_src["Y"].values.astype(float), size=5)
+            # Distancia acumulada GPS para mapear corners_dist → X,Y
+            dx_ = np.diff(x_raw, prepend=x_raw[0])
+            dy_ = np.diff(y_raw, prepend=y_raw[0])
+            gps_dist_cum = np.cumsum(np.sqrt(dx_**2 + dy_**2))
+            gps_total    = gps_dist_cum[-1]
+
+            for c in corners:
+                try:
+                    c_dist = float(c.get("Distance", 0))
+                    c_num  = str(c.get("Number", ""))
+                    c_let  = str(c.get("Letter", ""))
+                    label  = f"T{c_num}{c_let}".strip()
+
+                    # Interpolar posición GPS de la curva
+                    frac = (c_dist % gps_total) / gps_total
+                    idx  = int(frac * (len(x_raw) - 1))
+                    cx   = float(x_raw[idx])
+                    cy   = float(y_raw[idx])
+
+                    fig.add_annotation(
+                        x=cx, y=cy,
+                        xref=f"x7", yref=f"y7",
+                        text=label,
+                        showarrow=False,
+                        font=dict(family="Share Tech Mono, monospace",
+                                  color="#C8D6E5", size=7),
+                        bgcolor="rgba(7,11,15,0.70)",
+                        bordercolor="#2E3E50",
+                        borderwidth=0,
+                        borderpad=1,
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     # ── Layout global ──────────────────────────────────────────────────────
     total_h = 1060 if has_map else 980
@@ -1521,7 +1615,9 @@ def generate_report(d):
 
     charts = {
         "Telemetry": build_main_telemetry(dist, t1, t2, d1, d2, delta,
-                                           pos1=d.get("pos1"), pos2=d.get("pos2")),
+                                           pos1=d.get("pos1"), pos2=d.get("pos2"),
+                                           corners=d.get("corners", []),
+                                           sector_dists=d.get("sector_dists", [])),
         "Speed Distribution": build_speed_histogram(t1, t2, d1, d2),
         "Gear Usage": build_gear_usage(t1, t2, d1, d2),
         "Throttle Efficiency": build_throttle_scatter(t1, t2, d1, d2),
@@ -2192,6 +2288,9 @@ def main():
             bz1 = detect_braking_zones(dist, t1i, bthr, bmin)
             bz2 = detect_braking_zones(dist, t2i, bthr, bmin)
 
+            # Circuit info: corners y sectores (desde la sesión de referencia)
+            corners_df, sector_dists = get_circuit_info(session1)
+
             status("Loading lap pace data…", 82)
             try:
                 all1 = get_all_laps(session1, driver1)
@@ -2239,6 +2338,8 @@ def main():
                 bz1=bz1, bz2=bz2, all1=all1, all2=all2,
                 ql1=ql1, ql2=ql2,
                 tc1=tc1, tc2=tc2,
+                corners=corners_df.to_dict("records") if not corners_df.empty else [],
+                sector_dists=sector_dists,
                 driver1=label1, driver2=label2,   # etiquetas con sesión si cross
                 gp_name=gp_name, year=year,
                 session=lbl1,
@@ -2335,7 +2436,9 @@ def main():
         st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
         st.plotly_chart(
             build_main_telemetry(d["dist"], d["t1"], d["t2"], d1, d2, d["delta"],
-                                  pos1=d.get("pos1"), pos2=d.get("pos2")),
+                                  pos1=d.get("pos1"), pos2=d.get("pos2"),
+                                  corners=d.get("corners", []),
+                                  sector_dists=d.get("sector_dists", [])),
             use_container_width=True, config=CHART_CFG)
         st.markdown("</div>", unsafe_allow_html=True)
 
