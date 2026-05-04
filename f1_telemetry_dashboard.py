@@ -698,15 +698,16 @@ def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
             hovertemplate="%{y:.0f} km/h<extra></extra>"), row=2, col=1)
 
     # ── Throttle & Brake ───────────────────────────────────────────────────
-    for tel, prefix, col in [
+    # ── Throttle only ───────────────────────────────────────────────────
+for tel, prefix, col in [
     (t1, d1_name, D1),
     (t2, d2_name, D2),
-    ]:
+]:
     fig.add_trace(go.Scatter(
         x=dist,
         y=tel["Throttle"],
         mode="lines",
-        line=dict(color=col, width=1.6),
+        line=dict(color=col, width=1.8),
         name=f"THR {prefix}",
         showlegend=False,
         hovertemplate="%{y:.0f}%<extra></extra>"
