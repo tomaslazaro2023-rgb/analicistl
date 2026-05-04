@@ -1006,17 +1006,34 @@ def build_pace_chart(laps1, laps2, d1_name, d2_name):
 def build_delta_speed(dist, t1, t2, d1_name, d2_name, delta,
                        corners=None, sector_dists=None):
     """
-    Vista ampliada: Delta Time + Velocidad en dos paneles grandes.
-    Números de curva en eje X y líneas verticales de sector.
+    3 paneles: VELOCIDAD (arriba) · THROTTLE % (medio) · Δ TIME (abajo).
+    Curvas en eje X y líneas verticales de sector en los 3 paneles.
     """
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        row_heights=[0.36, 0.64],
-        subplot_titles=["Δ TIME (s)", "VELOCIDAD (km/h)"],
-        vertical_spacing=0.06,
+        rows=3, cols=1, shared_xaxes=True,
+        row_heights=[0.45, 0.25, 0.30],
+        subplot_titles=["VELOCIDAD (km/h)", "THROTTLE (%)", "Δ TIME (s)"],
+        vertical_spacing=0.05,
     )
 
-    # ── Delta ──────────────────────────────────────────────────────────────
+    # ── Velocidad — fila 1 ────────────────────────────────────────────────
+    for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
+        fig.add_trace(go.Scatter(
+            x=dist, y=tel["Speed"], mode="lines",
+            line=dict(color=col, width=2.2), name=name,
+            hovertemplate=f"<b>{name}</b> %{{y:.0f}} km/h<extra></extra>",
+        ), row=1, col=1)
+
+    # ── Throttle — fila 2 ─────────────────────────────────────────────────
+    for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
+        fig.add_trace(go.Scatter(
+            x=dist, y=tel["Throttle"], mode="lines",
+            line=dict(color=col, width=1.8), name=f"THR {name}",
+            showlegend=False,
+            hovertemplate=f"<b>{name}</b> %{{y:.0f}}%<extra></extra>",
+        ), row=2, col=1)
+
+    # ── Delta — fila 3 ────────────────────────────────────────────────────
     pos_d = np.where(delta >= 0, delta, np.nan)
     neg_d = np.where(delta <  0, delta, np.nan)
     fig.add_trace(go.Scatter(
@@ -1025,21 +1042,22 @@ def build_delta_speed(dist, t1, t2, d1_name, d2_name, delta,
         name=f"▲ {d1_name} gana",
         fill="tozeroy", fillcolor="rgba(57,211,83,0.10)",
         hovertemplate="Δ %{y:+.3f}s<extra></extra>",
-    ), row=1, col=1)
+    ), row=3, col=1)
     fig.add_trace(go.Scatter(
         x=dist, y=neg_d, mode="lines",
         line=dict(color=D1, width=2.5),
         name=f"▼ {d2_name} gana",
         fill="tozeroy", fillcolor="rgba(232,0,45,0.10)",
         hovertemplate="Δ %{y:+.3f}s<extra></extra>",
-    ), row=1, col=1)
-    fig.add_hline(y=0, line=dict(color="#2E3E50", width=1, dash="dot"), row=1, col=1)
+    ), row=3, col=1)
+    fig.add_hline(y=0, line=dict(color="#2E3E50", width=1, dash="dot"), row=3, col=1)
 
     # Anotación delta final
-    final_d  = float(delta[-1])
-    col_end  = GREEN if final_d < 0 else D1
+    final_d = float(delta[-1])
+    col_end = GREEN if final_d < 0 else D1
     fig.add_annotation(
-        x=float(dist[-1]), y=final_d, xref="x", yref="y",
+        x=float(dist[-1]), y=final_d,
+        xref="x3", yref="y3",
         text=f"<b>{final_d:+.3f}s</b>",
         showarrow=True, arrowhead=0, arrowcolor=col_end,
         font=dict(family="Orbitron, sans-serif", color=col_end, size=11),
@@ -1047,35 +1065,30 @@ def build_delta_speed(dist, t1, t2, d1_name, d2_name, delta,
         bordercolor=col_end, borderwidth=1, borderpad=4,
     )
 
-    # ── Velocidad ──────────────────────────────────────────────────────────
-    for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
-        fig.add_trace(go.Scatter(
-            x=dist, y=tel["Speed"], mode="lines",
-            line=dict(color=col, width=2.2), name=name,
-            hovertemplate=f"<b>{name}</b> %{{y:.0f}} km/h<extra></extra>",
-        ), row=2, col=1)
-
-    # ── Líneas de sector ───────────────────────────────────────────────────
+    # ── Líneas de sector en los 3 paneles ────────────────────────────────
     if sector_dists:
+        SECTOR_MAP = [
+            (1, "x",  "y domain"),
+            (2, "x2", "y2 domain"),
+            (3, "x3", "y3 domain"),
+        ]
         for sd, scol, slbl in zip(
             sector_dists, ["#FFD700", "#39D353"], ["S2", "S3"]
         ):
             sd = float(sd)
             if sd <= 0 or sd > dist.max() * 1.05:
                 continue
-            for row_i, xref_n, yref_n in [
-                (1, "x",  "y domain"),
-                (2, "x2", "y2 domain"),
-            ]:
+            for _, xref_n, yref_n in SECTOR_MAP:
                 fig.add_shape(
                     type="line", x0=sd, x1=sd, y0=0, y1=1,
                     xref=xref_n, yref=yref_n,
                     line=dict(color=scol, width=1.5, dash="dot"),
                 )
+            # Etiqueta encima del panel de velocidad
             spd_at = float(np.interp(sd, dist, t1["Speed"].values))
             fig.add_annotation(
-                x=sd, xref="x2",
-                y=spd_at + 14, yref="y2",
+                x=sd, xref="x",
+                y=spd_at + 12, yref="y",
                 text=f"<b>{slbl}</b>",
                 showarrow=False,
                 font=dict(family="Share Tech Mono", color=scol, size=10),
@@ -1083,7 +1096,7 @@ def build_delta_speed(dist, t1, t2, d1_name, d2_name, delta,
                 bordercolor=scol, borderwidth=1, borderpad=3,
             )
 
-    # ── Números de curva bajo el eje X ─────────────────────────────────────
+    # ── Números de curva bajo el eje X (panel delta) ──────────────────────
     if corners:
         for c in corners:
             try:
@@ -1093,28 +1106,27 @@ def build_delta_speed(dist, t1, t2, d1_name, d2_name, delta,
                 label  = f"{c_num}{c_let}"
                 if c_dist > dist.max() * 1.02:
                     continue
-                # Línea vertical tenue
+                # Línea tenue en panel de velocidad
                 fig.add_shape(
                     type="line", x0=c_dist, x1=c_dist, y0=0, y1=1,
-                    xref="x2", yref="y2 domain",
+                    xref="x", yref="y domain",
                     line=dict(color="rgba(80,100,120,0.30)", width=1, dash="dot"),
                 )
-                # Número bajo el eje
+                # Número debajo del eje X inferior (paper coords)
                 fig.add_annotation(
-                    x=c_dist, xref="x2",
-                    y=-0.05, yref="paper",
+                    x=c_dist, xref="x3",
+                    y=-0.06, yref="paper",
                     text=f"<b>{label}</b>",
                     showarrow=False,
-                    font=dict(family="Share Tech Mono",
-                              color="#566A7F", size=8),
+                    font=dict(family="Share Tech Mono", color="#566A7F", size=8),
                     bgcolor="rgba(0,0,0,0)",
                 )
             except Exception:
                 continue
 
     fig.update_layout(**pb(
-        height=620, showlegend=True,
-        margin=dict(l=65, r=160, t=48, b=60),
+        height=680, showlegend=True,
+        margin=dict(l=65, r=160, t=48, b=65),
         hovermode="x unified",
         hoverlabel=dict(
             bgcolor="#0C1018", bordercolor="#1A2535",
@@ -1128,15 +1140,20 @@ def build_delta_speed(dist, t1, t2, d1_name, d2_name, delta,
             x=1.01, y=1, xanchor="left",
         ),
     ))
-    for i in [1, 2]:
+    for i in [1, 2, 3]:
         fig.update_xaxes(**AX, row=i, col=1)
         fig.update_yaxes(**AX, row=i, col=1)
-    fig.update_xaxes(title_text="Distancia (m)",
-                     title_font=dict(color="#566A7F", size=10), row=2, col=1)
-    fig.update_yaxes(title_text="Δ Tiempo (s)",
+    fig.update_xaxes(
+        title_text="Distancia (m)",
+        title_font=dict(color="#566A7F", size=10),
+        row=3, col=1,
+    )
+    fig.update_yaxes(title_text="km/h",
                      title_font=dict(color="#566A7F", size=10), row=1, col=1)
-    fig.update_yaxes(title_text="Velocidad (km/h)",
+    fig.update_yaxes(title_text="Throttle %",
                      title_font=dict(color="#566A7F", size=10), row=2, col=1)
+    fig.update_yaxes(title_text="Δ (s)",
+                     title_font=dict(color="#566A7F", size=10), row=3, col=1)
     for ann in fig.layout.annotations:
         ann.update(font=dict(family="Share Tech Mono, monospace",
                              color="#2E3E50", size=9),
