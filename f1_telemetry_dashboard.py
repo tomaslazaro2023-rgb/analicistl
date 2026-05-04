@@ -699,11 +699,11 @@ def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
 
     # ── Throttle & Brake ───────────────────────────────────────────────────
     # ── Throttle only ───────────────────────────────────────────────────
-for tel, prefix, col in [
+    for tel, prefix, col in [
     (t1, d1_name, D1),
     (t2, d2_name, D2),
-]:
-    fig.add_trace(go.Scatter(
+    ]:
+        fig.add_trace(go.Scatter(
         x=dist,
         y=tel["Throttle"],
         mode="lines",
