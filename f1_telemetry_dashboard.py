@@ -698,16 +698,20 @@ def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
             hovertemplate="%{y:.0f} km/h<extra></extra>"), row=2, col=1)
 
     # ── Throttle & Brake ───────────────────────────────────────────────────
-    for tel, prefix, col, dash in [
-        (t1, d1_name, D1, "solid"), (t2, d2_name, D2, "solid"),
-        (t1, d1_name, "#FF6B35", "dash"), (t2, d2_name, "#FFB347", "dash"),
-    ]:
-        is_brake = dash == "dash"
-        data  = tel["Brake"] * 100 if is_brake else tel["Throttle"]
-        label = f"BRK {prefix}" if is_brake else f"THR {prefix}"
-        fig.add_trace(go.Scatter(x=dist, y=data, mode="lines",
-            line=dict(color=col, width=1.4, dash=dash), name=label,
-            showlegend=False, hovertemplate="%{y:.0f}%<extra></extra>"), row=3, col=1)
+    for tel, prefix, col in [
+    (t1, d1_name, D1),
+    (t2, d2_name, D2),
+        ]:
+    fig.add_trace(go.Scatter(
+        x=dist,
+        y=tel["Throttle"],
+        mode="lines",
+        line=dict(color=col, width=1.6),
+        name=f"THR {prefix}",
+        showlegend=False,
+        hovertemplate="%{y:.0f}%<extra></extra>"
+    ), row=3, col=1)
+    
 
     # ── Gear ───────────────────────────────────────────────────────────────
     for tel, name, col in [(t1, d1_name, D1), (t2, d2_name, D2)]:
