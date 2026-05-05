@@ -825,6 +825,218 @@ def build_main_telemetry(dist, t1, t2, d1_name, d2_name, delta,
     return fig
 
 
+def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
+                       corners=None, sector_dists=None,
+                       bz1=None, bz2=None):
+    """
+    Mapa del circuito estilo FIA:
+    · Trazado coloreado por sector (rojo S1 · azul S2 · amarillo S3)
+    · Nombres de curva sobre el trazado sin superposición
+    · Zona de velocidad de cada piloto como referencia
+    · Puntos de frenada brusca marcados
+    """
+    SECTOR_COLORS = ["#E8002D", "#00D4FF", "#FFD700"]   # S1 rojo · S2 azul · S3 amarillo
+    TRACK_BG      = "#1A2535"
+
+    fig = go.Figure()
+
+    # ── Elegir la mejor fuente de posición disponible ─────────────────────
+    pos_src = None
+    spd_src = None
+    for pos, spd in [(pos1, t1["Speed"].values), (pos2, t2["Speed"].values)]:
+        if pos is not None and not pos.empty:
+            pos_src = pos; spd_src = spd; break
+
+    if pos_src is None:
+        fig.update_layout(**pb(height=500, paper_bgcolor="#070B0F",
+                               plot_bgcolor="#090D13"))
+        fig.add_annotation(text="Sin datos GPS disponibles para este GP/sesión",
+                           xref="paper", yref="paper", x=0.5, y=0.5,
+                           font=dict(family="Share Tech Mono", color="#566A7F", size=13),
+                           showarrow=False)
+        return fig
+
+    # ── Suavizar trazado GPS ──────────────────────────────────────────────
+    x_raw = uniform_filter1d(pos_src["X"].values.astype(float), size=6)
+    y_raw = uniform_filter1d(pos_src["Y"].values.astype(float), size=6)
+    n     = len(x_raw)
+
+    # Distancia acumulada GPS
+    dx_  = np.diff(x_raw, prepend=x_raw[0])
+    dy_  = np.diff(y_raw, prepend=y_raw[0])
+    gps_cum = np.cumsum(np.sqrt(dx_**2 + dy_**2))
+
+    # Velocidad interpolada al GPS
+    spd_interp = np.interp(np.linspace(0,1,n), np.linspace(0,1,len(spd_src)), spd_src)
+
+    # ── Contorno negro grueso (fondo del trazado) ─────────────────────────
+    fig.add_trace(go.Scatter(
+        x=x_raw, y=y_raw, mode="lines",
+        line=dict(color=TRACK_BG, width=18),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    # ── Colorear por sector ───────────────────────────────────────────────
+    # Mapear sector_dists (en metros de telemetría) → índices GPS
+    sector_boundaries = []   # índices en el array GPS
+    if sector_dists:
+        for sd in sector_dists:
+            sd_f    = float(sd) / t1["Distance"].max() * gps_cum.max()
+            idx     = int(np.argmin(np.abs(gps_cum - sd_f)))
+            sector_boundaries.append(idx)
+
+    # Segmentos de sector: [0→s1, s1→s2, s2→fin]
+    boundaries = [0] + sector_boundaries + [n - 1]
+    for seg_i in range(len(boundaries) - 1):
+        i_start = boundaries[seg_i]
+        i_end   = boundaries[seg_i + 1]
+        col     = SECTOR_COLORS[seg_i % len(SECTOR_COLORS)]
+        fig.add_trace(go.Scatter(
+            x=x_raw[i_start:i_end+1],
+            y=y_raw[i_start:i_end+1],
+            mode="lines",
+            line=dict(color=col, width=8),
+            name=f"S{seg_i+1}",
+            showlegend=True,
+            hovertemplate=f"<b>Sector {seg_i+1}</b><extra></extra>",
+        ))
+
+    # ── Puntos de velocidad mínima en curvas (frenadas) ──────────────────
+    if bz1:
+        for z in bz1:
+            # Distancia de frenada → posición GPS
+            sd_f = float(z["start_m"]) / t1["Distance"].max() * gps_cum.max()
+            idx  = int(np.argmin(np.abs(gps_cum - sd_f)))
+            fig.add_trace(go.Scatter(
+                x=[x_raw[idx]], y=[y_raw[idx]],
+                mode="markers",
+                marker=dict(color=D1, size=8, symbol="triangle-down",
+                            line=dict(color="#FFF", width=1)),
+                name=f"{d1_name} brake",
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{d1_name}</b><br>"
+                    f"Frenada: {z['speed_drop']:.0f} km/h<br>"
+                    f"Entrada: {z['max_speed_entry']:.0f} km/h"
+                    "<extra></extra>"
+                ),
+            ))
+
+    if bz2:
+        for z in bz2:
+            sd_f = float(z["start_m"]) / t2["Distance"].max() * gps_cum.max()
+            idx  = int(np.argmin(np.abs(gps_cum - sd_f)))
+            fig.add_trace(go.Scatter(
+                x=[x_raw[idx]], y=[y_raw[idx]],
+                mode="markers",
+                marker=dict(color=D2, size=8, symbol="triangle-down",
+                            line=dict(color="#FFF", width=1)),
+                name=f"{d2_name} brake",
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{d2_name}</b><br>"
+                    f"Frenada: {z['speed_drop']:.0f} km/h<br>"
+                    f"Entrada: {z['max_speed_entry']:.0f} km/h"
+                    "<extra></extra>"
+                ),
+            ))
+
+    # ── Línea de meta ─────────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=[x_raw[0]], y=[y_raw[0]],
+        mode="markers",
+        marker=dict(color="#FFFFFF", size=12, symbol="square",
+                    line=dict(color="#E8002D", width=2)),
+        name="Línea de meta",
+        hovertemplate="Línea de meta<extra></extra>",
+    ))
+
+    # ── Nombres de curvas sin solapamiento ────────────────────────────────
+    if corners:
+        used_positions = []   # lista de (x, y) ya usadas
+
+        def too_close(cx, cy, threshold=800):
+            for ux, uy in used_positions:
+                if abs(cx - ux) < threshold and abs(cy - uy) < threshold:
+                    return True
+            return False
+
+        for c in corners:
+            try:
+                c_dist = float(c.get("Distance", 0))
+                c_num  = str(int(c.get("Number", 0)))
+                c_let  = str(c.get("Letter", "") or "")
+                label  = f"{c_num}{c_let}"
+
+                # Mapear distancia → índice GPS
+                sd_f = c_dist / gps_cum.max() * gps_cum.max()
+                idx  = int(np.argmin(np.abs(gps_cum - c_dist)))
+                cx, cy = float(x_raw[idx]), float(y_raw[idx])
+
+                if too_close(cx, cy):
+                    continue   # saltar si está muy cerca de otra etiqueta
+                used_positions.append((cx, cy))
+
+                # Desplazar la etiqueta perpendicularmente al trazado
+                if idx > 0 and idx < n - 1:
+                    tang_x = x_raw[idx+1] - x_raw[idx-1]
+                    tang_y = y_raw[idx+1] - y_raw[idx-1]
+                    norm   = np.sqrt(tang_x**2 + tang_y**2) + 1e-9
+                    perp_x = -tang_y / norm * 600
+                    perp_y =  tang_x / norm * 600
+                else:
+                    perp_x = perp_y = 300
+
+                fig.add_annotation(
+                    x=cx + perp_x, y=cy + perp_y,
+                    text=f"<b>{label}</b>",
+                    showarrow=False,
+                    font=dict(family="Orbitron, sans-serif",
+                              color="#C8D6E5", size=9),
+                    bgcolor="rgba(7,11,15,0.75)",
+                    bordercolor="#2E3E50",
+                    borderwidth=1,
+                    borderpad=2,
+                )
+            except Exception:
+                continue
+
+    # ── Layout ────────────────────────────────────────────────────────────
+    fig.update_layout(**pb(
+        height=560,
+        paper_bgcolor="#070B0F",
+        plot_bgcolor="#070B0F",
+        margin=dict(l=20, r=20, t=50, b=20),
+        title=dict(
+            text=(f"CIRCUITO  ·  "
+                  f"<span style='color:{SECTOR_COLORS[0]}'>■ S1</span>  "
+                  f"<span style='color:{SECTOR_COLORS[1]}'>■ S2</span>  "
+                  f"<span style='color:{SECTOR_COLORS[2]}'>■ S3</span>  "
+                  f"·  ▼ punto de frenada"),
+            font=dict(family="Share Tech Mono, monospace",
+                      color="#566A7F", size=10),
+            x=0,
+        ),
+        showlegend=True,
+        legend=dict(
+            bgcolor="rgba(12,16,24,0.85)", bordercolor="#1A2535",
+            font=dict(family="Share Tech Mono, monospace",
+                      color="#C8D6E5", size=9),
+            x=1.01, y=1, xanchor="left",
+        ),
+        hovermode="closest",
+        hoverlabel=dict(
+            bgcolor="#0C1018", bordercolor="#1A2535",
+            font=dict(family="Share Tech Mono, monospace",
+                      color="#C8D6E5", size=11),
+        ),
+    ))
+    fig.update_xaxes(visible=False, scaleanchor="y", scaleratio=1)
+    fig.update_yaxes(visible=False)
+
+    return fig
+
+
 def build_dual_track_map(pos1, pos2, t1, t2, d1_name, d2_name):
     SPEED_SCALE = [[0,"#2E0000"],[0.25,"#E8002D"],[0.5,"#FFD700"],[0.75,"#39D353"],[1,"#00D4FF"]]
 
@@ -2802,54 +3014,85 @@ def main():
             </div>""", unsafe_allow_html=True)
 
     with t_map:
-        st.markdown('<div class="sec-label">SPEED HEATMAP — CIRCUIT LAYOUT</div>',
-                    unsafe_allow_html=True)
+        has_gps = d["pos1"] is not None or d["pos2"] is not None
 
-        if d["pos1"] is None and d["pos2"] is None:
+        if not has_gps:
             st.markdown("""<div class="warn-box">
-              ⚠  No positional (GPS) data available for this session/lap.<br>
-              Track maps require position data — usually available in Qualifying and Race.
+              ⚠  Sin datos GPS para esta sesión.<br>
+              El mapa del circuito requiere datos de posición — disponibles en Qualifying y Race.
             </div>""", unsafe_allow_html=True)
         else:
+            # ── Mapa principal del circuito ───────────────────────────────
+            st.markdown('<div class="sec-label">🗺  TRAZADO DEL CIRCUITO — sectores · curvas · frenadas</div>',
+                        unsafe_allow_html=True)
             st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
-            st.plotly_chart(
-                build_dual_track_map(d["pos1"], d["pos2"], d["t1"], d["t2"], d1, d2),
-                use_container_width=True, config=MINI_CFG)
+            fig_circuit = build_circuit_map(
+                d["pos1"], d["pos2"],
+                d["t1"],   d["t2"],
+                d1, d2,
+                corners      = d.get("corners", []),
+                sector_dists = d.get("sector_dists", []),
+                bz1          = d.get("bz1", []),
+                bz2          = d.get("bz2", []),
+            )
+            st.plotly_chart(fig_circuit, use_container_width=True,
+                            config=MINI_CFG, key="pchart_circuit")
             st.markdown("</div>", unsafe_allow_html=True)
-            st.markdown("""
-            <div style="font-family:'Share Tech Mono',monospace;font-size:9px;color:#2E3E50;padding:6px 0;line-height:2">
-              COLOR SCALE →
-              <span style="color:#2E0000">■ Slow</span>
-              <span style="color:#E8002D">■</span>
-              <span style="color:#FFD700">■</span>
-              <span style="color:#39D353">■</span>
-              <span style="color:#00D4FF">■ Fast</span>
-            </div>""", unsafe_allow_html=True)
 
-        # Braking zone map
-        st.markdown('<div class="sec-label">BRAKING ZONES MAP</div>', unsafe_allow_html=True)
+        # ── Mapa de zonas de frenada (distancia) ─────────────────────────
+        st.markdown('<div class="sec-label">BRAKING ZONES — distancia acumulada</div>',
+                    unsafe_allow_html=True)
         st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
         st.plotly_chart(
-            build_braking_chart(d["bz1"], d["bz2"], d1, d2, float(d["dist"].max())),
-            use_container_width=True, config=MINI_CFG)
+            build_braking_chart(d["bz1"], d["bz2"], d1, d2,
+                                 float(d["dist"].max())),
+            use_container_width=True, config=MINI_CFG,
+            key="pchart_braking")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Braking zone tables
+        # ── Tablas detalladas de frenada ──────────────────────────────────
+        st.markdown('<div class="sec-label">DETALLE DE FRENADAS</div>',
+                    unsafe_allow_html=True)
         ca, cb = st.columns(2)
-        for col_st, zones, name, color in [(ca, d["bz1"], d1, D1), (cb, d["bz2"], d2, D2)]:
+        for col_st, zones, name, color in [
+            (ca, d["bz1"], d1, D1),
+            (cb, d["bz2"], d2, D2),
+        ]:
             with col_st:
-                rows = "".join(f"""
-                <tr><td>{i}</td><td>{z['start_m']:.0f}</td><td>{z['end_m']:.0f}</td>
-                <td>{z['length_m']:.0f}</td><td>{z['max_speed_entry']:.0f}</td>
-                <td style="color:{color};font-weight:700">{z['speed_drop']:.0f}</td></tr>"""
-                for i, z in enumerate(zones, 1))
-                st.markdown(f"""
-                <div class="sec-label"><span style="color:{color}">■</span> {name}</div>
-                <table class="bz-table">
-                  <thead><tr><th>#</th><th>Start</th><th>End</th>
-                    <th>Length</th><th>Entry km/h</th><th>Δv km/h</th></tr></thead>
-                  <tbody>{rows if rows else '<tr><td colspan=6 style="color:#2E3E50">No braking zones detected</td></tr>'}</tbody>
-                </table>""", unsafe_allow_html=True)
+                st.markdown(
+                    f'<div style="font-family:Share Tech Mono,monospace;'
+                    f'font-size:10px;color:{color};margin-bottom:6px;'
+                    f'letter-spacing:1px">■ {name} — '
+                    f'{len(zones)} zonas de frenada</div>',
+                    unsafe_allow_html=True)
+                if zones:
+                    rows_html = "".join(f"""
+                    <tr>
+                      <td>{i}</td>
+                      <td>{z['start_m']:.0f}m</td>
+                      <td>{z['length_m']:.0f}m</td>
+                      <td>{z['max_speed_entry']:.0f}</td>
+                      <td>{z['min_speed']:.0f}</td>
+                      <td style="color:{color};font-weight:700">
+                        {z['speed_drop']:.0f}
+                      </td>
+                    </tr>"""
+                    for i, z in enumerate(zones, 1))
+                    st.markdown(f"""
+                    <table class="bz-table">
+                      <thead>
+                        <tr>
+                          <th>#</th><th>Inicio</th><th>Longitud</th>
+                          <th>V entrada</th><th>V mín</th><th>Δv km/h</th>
+                        </tr>
+                      </thead>
+                      <tbody>{rows_html}</tbody>
+                    </table>""", unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        '<div style="font-family:Share Tech Mono,monospace;'
+                        'font-size:10px;color:#2E3E50">Sin zonas detectadas</div>',
+                        unsafe_allow_html=True)
 
     # ── TAB 3: Statistical Analysis ───────────────────────────────────────────
     with t_stats:
