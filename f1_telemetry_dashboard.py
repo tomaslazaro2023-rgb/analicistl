@@ -2540,9 +2540,8 @@ def main():
     render_sectors(d["lap1"], d["lap2"], d1, d2)
 
     # ── TABS ──────────────────────────────────────────────────────────────────
-    t_tel, t_dv, t_map, t_stats, t_race, t_pace, t_standings, t_export = st.tabs([
+    t_tel, t_map, t_stats, t_race, t_pace, t_standings, t_export = st.tabs([
         "📡  TELEMETRY",
-        "⚡  DELTA + VEL",
         "🗺  TRACK MAP",
         "📊  ANALYSIS",
         "🏎  RACE PACE",
@@ -2556,96 +2555,252 @@ def main():
                  "displaylogo": False}
     MINI_CFG  = {"displayModeBar": False, "displaylogo": False}
 
-    # ── TAB 1: Telemetry ──────────────────────────────────────────────────────
+    # ── TAB 1: Telemetría unificada — velocidad fija + canales elegibles ─────
     with t_tel:
-        st.markdown('<div class="sec-label">TELEMETRY CHANNELS — DISTANCE AXIS</div>',
-                    unsafe_allow_html=True)
+        CHANNELS = {
+            "Δ Delta Time":  "delta",
+            "Throttle %":    "throttle",
+            "Brake %":       "brake",
+            "Gear":          "gear",
+            "RPM":           "rpm",
+        }
+        st.markdown('''
+        <div style="font-family:Share Tech Mono,monospace;font-size:9px;
+                    color:#566A7F;letter-spacing:1.5px;margin:8px 0 4px">
+            CANALES — velocidad siempre arriba · elegí los canales adicionales
+        </div>''', unsafe_allow_html=True)
+
+        selected_ch = st.multiselect(
+            label="canales",
+            options=list(CHANNELS.keys()),
+            default=["Δ Delta Time", "Throttle %"],
+            label_visibility="collapsed",
+            key="tel_channels",
+        )
+
+        n_extra = len(selected_ch)
+        n_rows  = 1 + n_extra
+
+        row_heights_map = {
+            1: [1.0],
+            2: [0.55, 0.45],
+            3: [0.44, 0.28, 0.28],
+            4: [0.38, 0.22, 0.22, 0.18],
+            5: [0.32, 0.18, 0.18, 0.16, 0.16],
+        }
+        if n_rows in row_heights_map:
+            row_h = row_heights_map[n_rows]
+        else:
+            base = 0.30; rest = (1.0 - base) / max(n_extra, 1)
+            row_h = [base] + [rest] * n_extra
+
+        subplot_titles = ["VELOCIDAD (km/h)"] + [ch.upper() for ch in selected_ch]
+
+        fig_tel = make_subplots(
+            rows=n_rows, cols=1, shared_xaxes=True,
+            row_heights=row_h, subplot_titles=subplot_titles,
+            vertical_spacing=0.04,
+        )
+
+        # Fila 1: Velocidad (siempre)
+        for tel, name, col in [(d["t1"], d1, D1), (d["t2"], d2, D2)]:
+            fig_tel.add_trace(go.Scatter(
+                x=d["dist"], y=tel["Speed"], mode="lines",
+                line=dict(color=col, width=2.2), name=name,
+                hovertemplate=f"<b>{name}</b> %{{y:.0f}} km/h<extra></extra>",
+            ), row=1, col=1)
+
+        # Canales adicionales
+        for r_idx, ch_name in enumerate(selected_ch, start=2):
+            ch_key = CHANNELS[ch_name]
+            if ch_key == "delta":
+                pos_d = np.where(d["delta"] >= 0, d["delta"], np.nan)
+                neg_d = np.where(d["delta"] <  0, d["delta"], np.nan)
+                fig_tel.add_trace(go.Scatter(
+                    x=d["dist"], y=pos_d, mode="lines",
+                    line=dict(color=GREEN, width=2),
+                    name=f"▲ {d1} gana", showlegend=False,
+                    fill="tozeroy", fillcolor="rgba(57,211,83,0.10)",
+                    hovertemplate="Δ %{y:+.3f}s<extra></extra>",
+                ), row=r_idx, col=1)
+                fig_tel.add_trace(go.Scatter(
+                    x=d["dist"], y=neg_d, mode="lines",
+                    line=dict(color=D1, width=2),
+                    name=f"▼ {d2} gana", showlegend=False,
+                    fill="tozeroy", fillcolor="rgba(232,0,45,0.10)",
+                    hovertemplate="Δ %{y:+.3f}s<extra></extra>",
+                ), row=r_idx, col=1)
+                fig_tel.add_hline(y=0,
+                    line=dict(color="#2E3E50", width=1, dash="dot"),
+                    row=r_idx, col=1)
+                final_d = float(d["delta"][-1])
+                col_end = GREEN if final_d < 0 else D1
+                xref_a  = "x" if r_idx == 1 else f"x{r_idx}"
+                yref_a  = "y" if r_idx == 1 else f"y{r_idx}"
+                fig_tel.add_annotation(
+                    x=float(d["dist"][-1]), y=final_d,
+                    xref=xref_a, yref=yref_a,
+                    text=f"<b>{final_d:+.3f}s</b>",
+                    showarrow=True, arrowhead=0, arrowcolor=col_end,
+                    font=dict(family="Orbitron, sans-serif", color=col_end, size=10),
+                    bgcolor="rgba(7,11,15,0.85)",
+                    bordercolor=col_end, borderwidth=1, borderpad=3,
+                )
+            else:
+                data_map = {
+                    "throttle": (d["t1"]["Throttle"], d["t2"]["Throttle"], "linear"),
+                    "brake":    (d["t1"]["Brake"]*100, d["t2"]["Brake"]*100, "linear"),
+                    "gear":     (d["t1"]["nGear"],     d["t2"]["nGear"],     "hv"),
+                    "rpm":      (d["t1"].get("RPM", pd.Series(dtype=float)),
+                                 d["t2"].get("RPM", pd.Series(dtype=float)), "linear"),
+                }
+                data1, data2, shape = data_map[ch_key]
+                for data, name, col in [(data1, d1, D1), (data2, d2, D2)]:
+                    try:
+                        fig_tel.add_trace(go.Scatter(
+                            x=d["dist"], y=data, mode="lines",
+                            line=dict(color=col, width=1.8, shape=shape),
+                            name=name, showlegend=False,
+                            hovertemplate=f"<b>{name}</b> %{{y:.1f}}<extra></extra>",
+                        ), row=r_idx, col=1)
+                    except Exception:
+                        pass
+
+        # Líneas de sector
+        if d.get("sector_dists"):
+            for sd, scol, slbl in zip(
+                d["sector_dists"], ["#FFD700", "#39D353"], ["S2", "S3"]
+            ):
+                sd = float(sd)
+                if sd <= 0 or sd > d["dist"].max() * 1.05:
+                    continue
+                for row_i in range(1, n_rows + 1):
+                    xref_n = "x" if row_i == 1 else f"x{row_i}"
+                    yref_n = "y domain" if row_i == 1 else f"y{row_i} domain"
+                    fig_tel.add_shape(
+                        type="line", x0=sd, x1=sd, y0=0, y1=1,
+                        xref=xref_n, yref=yref_n,
+                        line=dict(color=scol, width=1.4, dash="dot"),
+                    )
+                spd_at = float(np.interp(sd, d["dist"], d["t1"]["Speed"].values))
+                fig_tel.add_annotation(
+                    x=sd, xref="x", y=spd_at + 10, yref="y",
+                    text=f"<b>{slbl}</b>", showarrow=False,
+                    font=dict(family="Share Tech Mono", color=scol, size=9),
+                    bgcolor="rgba(7,11,15,0.82)",
+                    bordercolor=scol, borderwidth=1, borderpad=2,
+                )
+
+        # Números de curva escalonados (3 alturas) para no solaparse
+        if d.get("corners"):
+            LEVELS = [-0.035, -0.060, -0.085]
+            for i, c in enumerate(d["corners"]):
+                try:
+                    c_dist = float(c.get("Distance", 0))
+                    c_num  = str(int(c.get("Number", 0)))
+                    c_let  = str(c.get("Letter", "") or "")
+                    label  = f"{c_num}{c_let}"
+                    if c_dist > d["dist"].max() * 1.02:
+                        continue
+                    level = LEVELS[i % len(LEVELS)]
+                    fig_tel.add_shape(
+                        type="line", x0=c_dist, x1=c_dist, y0=0, y1=1,
+                        xref="x", yref="y domain",
+                        line=dict(color="rgba(80,100,120,0.22)", width=1, dash="dot"),
+                    )
+                    fig_tel.add_annotation(
+                        x=c_dist, xref="x",
+                        y=level, yref="paper",
+                        text=f"<b>{label}</b>", showarrow=False,
+                        font=dict(family="Share Tech Mono", color="#566A7F", size=8),
+                        bgcolor="rgba(0,0,0,0)",
+                    )
+                except Exception:
+                    continue
+
+        height = max(480, 280 + n_rows * 120)
+        fig_tel.update_layout(**pb(
+            height=height, showlegend=True,
+            margin=dict(l=65, r=20, t=44, b=80),
+            hovermode="x unified",
+            hoverlabel=dict(
+                bgcolor="#0C1018", bordercolor="#1A2535", namelength=-1,
+                font=dict(family="Share Tech Mono, monospace",
+                          color="#C8D6E5", size=11),
+            ),
+            legend=dict(
+                bgcolor="rgba(12,16,24,0.85)", bordercolor="#1A2535",
+                font=dict(family="Share Tech Mono, monospace",
+                          color="#C8D6E5", size=10),
+                x=1.01, y=1, xanchor="left",
+            ),
+        ))
+        for i in range(1, n_rows + 1):
+            fig_tel.update_xaxes(**AX, row=i, col=1)
+            fig_tel.update_yaxes(**AX, row=i, col=1)
+        fig_tel.update_xaxes(title_text="Distancia (m)",
+                              title_font=dict(color="#566A7F", size=10),
+                              row=n_rows, col=1)
+        for ann in fig_tel.layout.annotations:
+            ann.update(font=dict(family="Share Tech Mono, monospace",
+                                 color="#2E3E50", size=9),
+                       xanchor="left", x=0.0)
+
         st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
-        st.plotly_chart(
-            build_main_telemetry(d["dist"], d["t1"], d["t2"], d1, d2, d["delta"],
-                                  pos1=d.get("pos1"), pos2=d.get("pos2"),
-                                  corners=d.get("corners", []),
-                                  sector_dists=d.get("sector_dists", [])),
-            use_container_width=True, config=CHART_CFG)
+        st.plotly_chart(fig_tel, use_container_width=True,
+                        config={**CHART_CFG, "scrollZoom": True},
+                        key="pchart_tel_main")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Delta summary row
-        delta = d["delta"]; dist = d["dist"]
-        c1, c2, c3, c4 = st.columns(4)
+        # KPI cards
+        delta = d["delta"]; dist_arr = d["dist"]
         gi = int(np.argmax(delta)); li = int(np.argmin(delta))
-        # delta>0 → d1 gaining; delta<0 → d2 gaining
         final_leader = d1 if delta[-1] > 0 else d2
-        for col, label, val, sub, cls in [
-            (c1, "FINAL DELTA",      f"{delta[-1]:+.3f}s",
-             f"{final_leader} FASTER overall", "neu"),
-            (c2, f"MAX {d1} GAIN",   f"{delta.max():.3f}s",
-             f"at {dist[gi]:.0f}m", "d2"),
-            (c3, f"MAX {d2} GAIN",   f"{abs(delta.min()):.3f}s",
-             f"at {dist[li]:.0f}m", "d1"),
+        c1, c2, c3, c4 = st.columns(4)
+        for col_st, label, val, sub, cls in [
+            (c1, "FINAL DELTA",    f"{delta[-1]:+.3f}s", f"{final_leader} más rápido", "neu"),
+            (c2, f"MAX {d1} GAIN", f"{delta.max():.3f}s", f"at {dist_arr[gi]:.0f}m",  "d2"),
+            (c3, f"MAX {d2} GAIN", f"{abs(delta.min()):.3f}s", f"at {dist_arr[li]:.0f}m", "d1"),
             (c4, "AVG SPEED DIFF",
              f"{d['t1']['Speed'].mean()-d['t2']['Speed'].mean():+.1f}",
              f"km/h ({d1} vs {d2})", "neu"),
         ]:
-            col.markdown(f"""
+            col_st.markdown(f"""
             <div class="metric-card {cls}" style="margin-top:8px">
               <div class="mc-label">{label}</div>
               <div class="mc-val" style="font-size:17px">{val}</div>
               <div class="mc-sub">{sub}</div>
             </div>""", unsafe_allow_html=True)
 
-    # ── TAB 2: Delta + Velocidad (vista ampliada) ─────────────────────────────
-    with t_dv:
-        st.markdown('<div class="sec-label">⚡ DELTA TIME + VELOCIDAD — vista ampliada con curvas y sectores</div>',
-                    unsafe_allow_html=True)
-        st.markdown('<div class="chart-wrap">', unsafe_allow_html=True)
-        fig_dv = build_delta_speed(
-            d["dist"], d["t1"], d["t2"], d1, d2, d["delta"],
-            corners=d.get("corners", []),
-            sector_dists=d.get("sector_dists", []),
-        )
-        st.plotly_chart(fig_dv, use_container_width=True,
-                        config={**CHART_CFG, "scrollZoom": True},
-                        key="pchart_dv")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # KPI de delta por sector
+        # Delta por sector
         if d.get("sector_dists"):
-            sd = d["sector_dists"]
-            dist_arr = d["dist"]
-            delta    = d["delta"]
-
-            def delta_at(target_dist):
-                idx = int(np.argmin(np.abs(dist_arr - target_dist)))
-                return float(delta[idx])
-
-            d_s1  = delta_at(sd[0]) if len(sd) > 0 else None
-            d_s2  = delta_at(sd[1]) if len(sd) > 1 else None
+            sd_list = d["sector_dists"]
+            def delta_at(td):
+                return float(delta[int(np.argmin(np.abs(dist_arr - td)))])
+            d_s1  = delta_at(sd_list[0]) if len(sd_list) > 0 else None
+            d_s2  = delta_at(sd_list[1]) if len(sd_list) > 1 else None
             d_fin = float(delta[-1])
-
             def delta_card(label, val, prev):
                 if val is None: return ""
-                seg = val - (prev or 0)
-                col = GREEN if seg < 0 else D1
+                seg  = val - (prev or 0)
                 sign = "▲" if seg >= 0 else "▼"
-                return f"""
-                <div class="metric-card {'grn' if seg < 0 else 'd1'}">
+                cls  = "grn" if seg < 0 else "d1"
+                return f"""<div class="metric-card {cls}">
                   <div class="mc-label">{label}</div>
                   <div class="mc-val" style="font-size:17px">{val:+.3f}s</div>
                   <div class="mc-sub">{sign} {abs(seg):.3f}s en el sector</div>
                 </div>"""
-
             st.markdown(f"""
-            <div class="metrics-row" style="margin-top:12px">
+            <div class="metrics-row" style="margin-top:10px">
               {delta_card("DELTA FIN S1", d_s1, 0)}
               {delta_card("DELTA FIN S2", d_s2, d_s1)}
               <div class="metric-card {'grn' if d_fin < 0 else 'd1'}">
                 <div class="mc-label">DELTA FINAL</div>
                 <div class="mc-val" style="font-size:17px">{d_fin:+.3f}s</div>
-                <div class="mc-sub">{'▲ ' + d1 + ' más rápido' if d_fin > 0 else '▼ ' + d2 + ' más rápido'}</div>
+                <div class="mc-sub">{'▲ ' + d1 if d_fin > 0 else '▼ ' + d2} más rápido</div>
               </div>
             </div>""", unsafe_allow_html=True)
 
-    # ── TAB 3: Track Map ──────────────────────────────────────────────────────
     with t_map:
         st.markdown('<div class="sec-label">SPEED HEATMAP — CIRCUIT LAYOUT</div>',
                     unsafe_allow_html=True)
