@@ -953,9 +953,12 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
 
     # ── Nombres de curvas sin solapamiento ────────────────────────────────
     if corners:
-        used_positions = []   # lista de (x, y) ya usadas
+        # Centroide del circuito para saber qué lado es "afuera"
+        cx_mean = float(np.mean(x_raw))
+        cy_mean = float(np.mean(y_raw))
+        used_positions = []
 
-        def too_close(cx, cy, threshold=800):
+        def too_close(cx, cy, threshold=900):
             for ux, uy in used_positions:
                 if abs(cx - ux) < threshold and abs(cy - uy) < threshold:
                     return True
@@ -968,32 +971,40 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
                 c_let  = str(c.get("Letter", "") or "")
                 label  = f"{c_num}{c_let}"
 
-                # Mapear distancia → índice GPS
-                sd_f = c_dist / gps_cum.max() * gps_cum.max()
                 idx  = int(np.argmin(np.abs(gps_cum - c_dist)))
-                cx, cy = float(x_raw[idx]), float(y_raw[idx])
+                cx   = float(x_raw[idx])
+                cy   = float(y_raw[idx])
 
                 if too_close(cx, cy):
-                    continue   # saltar si está muy cerca de otra etiqueta
+                    continue
                 used_positions.append((cx, cy))
 
-                # Desplazar la etiqueta perpendicularmente al trazado
-                if idx > 0 and idx < n - 1:
-                    tang_x = x_raw[idx+1] - x_raw[idx-1]
-                    tang_y = y_raw[idx+1] - y_raw[idx-1]
-                    norm   = np.sqrt(tang_x**2 + tang_y**2) + 1e-9
-                    perp_x = -tang_y / norm * 600
-                    perp_y =  tang_x / norm * 600
-                else:
-                    perp_x = perp_y = 300
+                # Vector perpendicular al trazado
+                i0 = max(0, idx - 2)
+                i1 = min(n - 1, idx + 2)
+                tang_x = x_raw[i1] - x_raw[i0]
+                tang_y = y_raw[i1] - y_raw[i0]
+                norm   = np.sqrt(tang_x**2 + tang_y**2) + 1e-9
+                perp_x = -tang_y / norm
+                perp_y =  tang_x / norm
 
+                # Forzar el offset hacia AFUERA del centroide
+                to_center_x = cx_mean - cx
+                to_center_y = cy_mean - cy
+                if (perp_x * to_center_x + perp_y * to_center_y) > 0:
+                    # el perpendicular apunta hacia adentro — invertir
+                    perp_x = -perp_x
+                    perp_y = -perp_y
+
+                offset = 700
                 fig.add_annotation(
-                    x=cx + perp_x, y=cy + perp_y,
+                    x=cx + perp_x * offset,
+                    y=cy + perp_y * offset,
                     text=f"<b>{label}</b>",
                     showarrow=False,
                     font=dict(family="Orbitron, sans-serif",
                               color="#C8D6E5", size=9),
-                    bgcolor="rgba(7,11,15,0.75)",
+                    bgcolor="rgba(7,11,15,0.78)",
                     bordercolor="#2E3E50",
                     borderwidth=1,
                     borderpad=2,
@@ -3517,3 +3528,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                
