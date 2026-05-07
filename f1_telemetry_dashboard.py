@@ -2914,37 +2914,59 @@ def main():
                     bordercolor=scol, borderwidth=1, borderpad=2,
                 )
 
-        # Números de curva escalonados (3 alturas) para no solaparse
+        # Números de curva en el eje X como ticks personalizados
+        # Distance viene directo de circuit_info.corners — mismo eje que la telemetría
         if d.get("corners"):
-            LEVELS = [-0.035, -0.060, -0.085]
-            for i, c in enumerate(d["corners"]):
+            corner_ticks_x    = []
+            corner_ticks_text = []
+            for c in d["corners"]:
                 try:
                     c_dist = float(c.get("Distance", 0))
                     c_num  = str(int(c.get("Number", 0)))
                     c_let  = str(c.get("Letter", "") or "")
-                    label  = f"{c_num}{c_let}"
                     if c_dist > d["dist"].max() * 1.02:
                         continue
-                    level = LEVELS[i % len(LEVELS)]
+                    corner_ticks_x.append(c_dist)
+                    corner_ticks_text.append(f"{c_num}{c_let}")
+                except Exception:
+                    continue
+
+            if corner_ticks_x:
+                # Líneas verticales muy tenues solo en el panel de velocidad
+                for c_dist in corner_ticks_x:
                     fig_tel.add_shape(
                         type="line", x0=c_dist, x1=c_dist, y0=0, y1=1,
                         xref="x", yref="y domain",
-                        line=dict(color="rgba(80,100,120,0.22)", width=1, dash="dot"),
+                        line=dict(color="rgba(80,100,120,0.18)",
+                                  width=1, dash="dot"),
                     )
-                    fig_tel.add_annotation(
-                        x=c_dist, xref="x",
-                        y=level, yref="paper",
-                        text=f"<b>{label}</b>", showarrow=False,
-                        font=dict(family="Share Tech Mono", color="#566A7F", size=8),
-                        bgcolor="rgba(0,0,0,0)",
-                    )
-                except Exception:
-                    continue
+
+                # Sobreescribir el eje X de la última fila con ticks de curvas
+                # Ticks combinados: los de distancia normales + las curvas
+                dist_max    = float(d["dist"].max())
+                # Ticks de distancia cada 500m aprox
+                n_dist_ticks = max(4, int(dist_max / 600))
+                dist_ticks_x = list(np.linspace(0, dist_max, n_dist_ticks))
+                dist_ticks_t = [f"{int(v)}m" for v in dist_ticks_x]
+
+                # Eje X del último panel de telemetría con curvas
+                last_row_xref = n_rows   # la última fila
+                fig_tel.update_xaxes(
+                    tickmode="array",
+                    tickvals=corner_ticks_x + dist_ticks_x,
+                    ticktext=corner_ticks_text + dist_ticks_t,
+                    tickfont=dict(
+                        family="Share Tech Mono, monospace",
+                        color="#566A7F", size=8,
+                    ),
+                    tickangle=0,
+                    row=n_rows, col=1,
+                )
 
         height = max(480, 280 + n_rows * 120)
         fig_tel.update_layout(**pb(
             height=height, showlegend=True,
-            margin=dict(l=65, r=20, t=44, b=80),
+            margin=dict(l=65, r=20, t=44, b=50),
             hovermode="x unified",
             hoverlabel=dict(
                 bgcolor="#0C1018", bordercolor="#1A2535", namelength=-1,
@@ -3528,4 +3550,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-                
