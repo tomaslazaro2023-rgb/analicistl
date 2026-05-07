@@ -2914,7 +2914,7 @@ def main():
                     bordercolor=scol, borderwidth=1, borderpad=2,
                 )
 
-        # Números de curva en el eje X como ticks personalizados
+        # Números de curva en el eje X SUPERIOR del panel de velocidad
         # Distance viene directo de circuit_info.corners — mismo eje que la telemetría
         if d.get("corners"):
             corner_ticks_x    = []
@@ -2932,7 +2932,7 @@ def main():
                     continue
 
             if corner_ticks_x:
-                # Líneas verticales muy tenues solo en el panel de velocidad
+                # Líneas verticales tenues en el panel de velocidad
                 for c_dist in corner_ticks_x:
                     fig_tel.add_shape(
                         type="line", x0=c_dist, x1=c_dist, y0=0, y1=1,
@@ -2941,26 +2941,19 @@ def main():
                                   width=1, dash="dot"),
                     )
 
-                # Sobreescribir el eje X de la última fila con ticks de curvas
-                # Ticks combinados: los de distancia normales + las curvas
-                dist_max    = float(d["dist"].max())
-                # Ticks de distancia cada 500m aprox
-                n_dist_ticks = max(4, int(dist_max / 600))
-                dist_ticks_x = list(np.linspace(0, dist_max, n_dist_ticks))
-                dist_ticks_t = [f"{int(v)}m" for v in dist_ticks_x]
-
-                # Eje X del último panel de telemetría con curvas
-                last_row_xref = n_rows   # la última fila
+                # Eje X superior en la fila 1 (velocidad) con los números de curva
                 fig_tel.update_xaxes(
                     tickmode="array",
-                    tickvals=corner_ticks_x + dist_ticks_x,
-                    ticktext=corner_ticks_text + dist_ticks_t,
+                    tickvals=corner_ticks_x,
+                    ticktext=corner_ticks_text,
                     tickfont=dict(
                         family="Share Tech Mono, monospace",
-                        color="#566A7F", size=8,
+                        color="#C8D6E5", size=8,
                     ),
                     tickangle=0,
-                    row=n_rows, col=1,
+                    side="top",          # ← eje encima del panel de velocidad
+                    showticklabels=True,
+                    row=1, col=1,
                 )
 
         height = max(480, 280 + n_rows * 120)
