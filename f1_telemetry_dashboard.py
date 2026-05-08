@@ -906,9 +906,8 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
     # ── Puntos de velocidad mínima en curvas (frenadas) ──────────────────
     if bz1:
         for z in bz1:
-            # Distancia de frenada → posición GPS
-            sd_f = float(z["start_m"]) / t1["Distance"].max() * gps_cum.max()
-            idx  = int(np.argmin(np.abs(gps_cum - sd_f)))
+            sd_gps = float(z["start_m"]) / tel_max * gps_max
+            idx    = int(np.argmin(np.abs(gps_cum - sd_gps)))
             fig.add_trace(go.Scatter(
                 x=[x_raw[idx]], y=[y_raw[idx]],
                 mode="markers",
@@ -926,8 +925,8 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
 
     if bz2:
         for z in bz2:
-            sd_f = float(z["start_m"]) / t2["Distance"].max() * gps_cum.max()
-            idx  = int(np.argmin(np.abs(gps_cum - sd_f)))
+            sd_gps = float(z["start_m"]) / tel_max * gps_max
+            idx    = int(np.argmin(np.abs(gps_cum - sd_gps)))
             fig.add_trace(go.Scatter(
                 x=[x_raw[idx]], y=[y_raw[idx]],
                 mode="markers",
