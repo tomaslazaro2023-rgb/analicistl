@@ -876,13 +876,15 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
         showlegend=False, hoverinfo="skip",
     ))
 
+    # Normalización: distancia de telemetría → escala GPS
+    tel_max = float(t1["Distance"].max()) if not t1.empty else 1.0
+
     # ── Colorear por sector ───────────────────────────────────────────────
-    # Mapear sector_dists (en metros de telemetría) → índices GPS
-    sector_boundaries = []   # índices en el array GPS
+    sector_boundaries = []
     if sector_dists:
         for sd in sector_dists:
-            sd_f    = float(sd) / t1["Distance"].max() * gps_cum.max()
-            idx     = int(np.argmin(np.abs(gps_cum - sd_f)))
+            sd_gps = float(sd) / tel_max * gps_max
+            idx    = int(np.argmin(np.abs(gps_cum - sd_gps)))
             sector_boundaries.append(idx)
 
     # Segmentos de sector: [0→s1, s1→s2, s2→fin]
@@ -953,59 +955,60 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
 
     # ── Nombres de curvas sin solapamiento ────────────────────────────────
     if corners:
-        # Centroide del circuito para saber qué lado es "afuera"
+        # Centroide para determinar lado externo
         cx_mean = float(np.mean(x_raw))
         cy_mean = float(np.mean(y_raw))
-        used_positions = []
 
-        def too_close(cx, cy, threshold=900):
-            for ux, uy in used_positions:
-                if abs(cx - ux) < threshold and abs(cy - uy) < threshold:
-                    return True
-            return False
+        # Escala de normalización: c_dist viene en metros de la API (igual que
+        # t1["Distance"]), gps_cum está en metros GPS del pos_data.
+        # Normalizamos c_dist al rango de gps_cum.
+        api_max = max(float(c.get("Distance", 0)) for c in corners) if corners else 1
+        gps_max = float(gps_cum[-1])
 
         for c in corners:
             try:
-                c_dist = float(c.get("Distance", 0))
-                c_num  = str(int(c.get("Number", 0)))
-                c_let  = str(c.get("Letter", "") or "")
-                label  = f"{c_num}{c_let}"
+                c_dist_api = float(c.get("Distance", 0))
+                c_num      = str(int(c.get("Number", 0)))
+                c_let      = str(c.get("Letter", "") or "")
+                label      = f"{c_num}{c_let}"
 
-                idx  = int(np.argmin(np.abs(gps_cum - c_dist)))
-                cx   = float(x_raw[idx])
-                cy   = float(y_raw[idx])
+                # Normalizar distancia API → escala GPS
+                c_dist_gps = c_dist_api / api_max * gps_max
+                idx        = int(np.argmin(np.abs(gps_cum - c_dist_gps)))
+                cx         = float(x_raw[idx])
+                cy         = float(y_raw[idx])
 
-                if too_close(cx, cy):
-                    continue
-                used_positions.append((cx, cy))
-
-                # Vector perpendicular al trazado
-                i0 = max(0, idx - 2)
-                i1 = min(n - 1, idx + 2)
+                # Vector perpendicular al trazado (ventana de 4 puntos)
+                i0 = max(0, idx - 3)
+                i1 = min(n - 1, idx + 3)
                 tang_x = x_raw[i1] - x_raw[i0]
                 tang_y = y_raw[i1] - y_raw[i0]
                 norm   = np.sqrt(tang_x**2 + tang_y**2) + 1e-9
                 perp_x = -tang_y / norm
                 perp_y =  tang_x / norm
 
-                # Forzar el offset hacia AFUERA del centroide
-                to_center_x = cx_mean - cx
-                to_center_y = cy_mean - cy
-                if (perp_x * to_center_x + perp_y * to_center_y) > 0:
-                    # el perpendicular apunta hacia adentro — invertir
-                    perp_x = -perp_x
-                    perp_y = -perp_y
+                # Forzar hacia AFUERA del centroide
+                if (perp_x * (cx_mean - cx) + perp_y * (cy_mean - cy)) > 0:
+                    perp_x, perp_y = -perp_x, -perp_y
 
-                offset = 700
+                # Punto en el trazado (pequeño marcador)
+                fig.add_trace(go.Scatter(
+                    x=[cx], y=[cy], mode="markers",
+                    marker=dict(color="#FFFFFF", size=4, symbol="circle"),
+                    showlegend=False, hoverinfo="skip",
+                ))
+
+                # Etiqueta desplazada perpendicularmente hacia afuera
+                offset = 550
                 fig.add_annotation(
                     x=cx + perp_x * offset,
                     y=cy + perp_y * offset,
                     text=f"<b>{label}</b>",
                     showarrow=False,
-                    font=dict(family="Orbitron, sans-serif",
-                              color="#C8D6E5", size=9),
-                    bgcolor="rgba(7,11,15,0.78)",
-                    bordercolor="#2E3E50",
+                    font=dict(family="Share Tech Mono, monospace",
+                              color="#C8D6E5", size=8),
+                    bgcolor="rgba(7,11,15,0.70)",
+                    bordercolor="rgba(80,100,120,0.5)",
                     borderwidth=1,
                     borderpad=2,
                 )
