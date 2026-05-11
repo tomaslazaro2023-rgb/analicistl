@@ -869,15 +869,18 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
     # Velocidad interpolada al GPS
     spd_interp = np.interp(np.linspace(0,1,n), np.linspace(0,1,len(spd_src)), spd_src)
 
+    # ── Normalización — definir ANTES de cualquier uso ────────────────────
+    gps_max = float(gps_cum[-1])
+    tel_max = float(t1["Distance"].max()) if (t1 is not None and not t1.empty) else gps_max
+    api_max = (max((float(c.get("Distance", 0)) for c in corners), default=0.0)
+               if corners else 0.0) or tel_max
+
     # ── Contorno negro grueso (fondo del trazado) ─────────────────────────
     fig.add_trace(go.Scatter(
         x=x_raw, y=y_raw, mode="lines",
         line=dict(color=TRACK_BG, width=18),
         showlegend=False, hoverinfo="skip",
     ))
-
-    # Normalización: distancia de telemetría → escala GPS
-    tel_max = float(t1["Distance"].max()) if not t1.empty else 1.0
 
     # ── Colorear por sector ───────────────────────────────────────────────
     sector_boundaries = []
@@ -957,12 +960,6 @@ def build_circuit_map(pos1, pos2, t1, t2, d1_name, d2_name,
         # Centroide para determinar lado externo
         cx_mean = float(np.mean(x_raw))
         cy_mean = float(np.mean(y_raw))
-
-        # Escala de normalización: c_dist viene en metros de la API (igual que
-        # t1["Distance"]), gps_cum está en metros GPS del pos_data.
-        # Normalizamos c_dist al rango de gps_cum.
-        api_max = max(float(c.get("Distance", 0)) for c in corners) if corners else 1
-        gps_max = float(gps_cum[-1])
 
         for c in corners:
             try:
