@@ -400,7 +400,17 @@ def load_schedule(year):
 def load_session_light(year, gp, stype):
     """Carga liviana — solo para obtener lista de pilotos en el sidebar."""
     sess = fastf1.get_session(year, gp, stype)
-    sess.load(telemetry=False, laps=False, weather=False, messages=False)
+    try:
+        sess.load(telemetry=False, laps=False, weather=False, messages=False)
+    except Exception as e:
+        err = str(e)
+        if "No data for this session" in err or "SessionNotAvailable" in err:
+            raise RuntimeError(
+                f"La API de F1 no tiene datos para {year} {gp} {stype}. "
+                f"Si es 2026, los datos están bloqueados (HTTP 403). "
+                f"Probá con 2018–2025."
+            ) from e
+        raise
     return sess
 
 
@@ -408,7 +418,26 @@ def load_session_light(year, gp, stype):
 def load_session(year, gp, stype):
     """Carga completa con telemetría — para análisis."""
     sess = fastf1.get_session(year, gp, stype)
-    sess.load(telemetry=True, laps=True, weather=False, messages=False)
+    try:
+        sess.load(telemetry=True, laps=True, weather=False, messages=False)
+    except Exception as e:
+        err = str(e)
+        if "No data for this session" in err or "SessionNotAvailable" in err:
+            raise RuntimeError(
+                f"La API de F1 no tiene datos para {year} {gp} {stype}. "
+                f"Si es 2026, los datos están bloqueados (HTTP 403). "
+                f"Probá con 2018–2025."
+            ) from e
+        raise
+    # Validar que realmente se cargaron datos
+    try:
+        _ = sess.laps
+    except Exception as e:
+        raise RuntimeError(
+            f"Sesión cargada pero sin datos de vueltas — "
+            f"la API de F1 devolvió datos vacíos para {year} {gp} {stype}. "
+            f"Probá con una temporada entre 2018 y 2025."
+        ) from e
     return sess
 
 
@@ -422,9 +451,10 @@ def get_drivers(year, gp, stype):
             for d in sess.drivers
         ])
     except Exception:
-        return ["VER","PER","LEC","SAI","HAM","RUS","NOR","PIA",
-                "ALO","STR","GAS","OCO","TSU","RIC","ALB","SAR",
-                "MAG","HUL","BOT","ZHO"]
+        # Grid 2026: Audi, Cadillac + equipos tradicionales
+        return ["VER","NOR","LEC","RUS","HAM","PIA","ALO","ANT",
+                "GAS","OCO","TSU","LAW","HUL","BEA","STR","COL",
+                "BOT","BOR","DRU","HAD"]
 
 
 def get_circuit_info(session):
@@ -2192,7 +2222,18 @@ def render_sidebar():
             DATA ANALYSIS SUITE v2
         </div>""", unsafe_allow_html=True)
 
-        year = st.selectbox("SEASON", [2026], index=0)
+        year = st.selectbox("SEASON", list(range(2025, 2017, -1)), index=0)
+
+        if year == 2026:
+            st.markdown("""
+            <div style="background:#14100A;border:1px solid #E8002D;border-radius:4px;
+                        padding:10px 14px;margin:6px 0 10px;font-family:'Share Tech Mono',monospace;
+                        font-size:10px;color:#E8002D;line-height:1.8">
+                ⚠ <b>2026 NO DISPONIBLE</b><br>
+                <span style="color:#566A7F">Formula 1 bloqueó el acceso público<br>
+                a los datos de telemetría 2026 (HTTP 403).<br>
+                Usá 2018–2025 para datos completos.</span>
+            </div>""", unsafe_allow_html=True)
 
         try:
             sched  = load_schedule(year)
@@ -2703,8 +2744,31 @@ def main():
 
         except Exception as e:
             ph_prog.empty(); ph_status.empty()
-            st.error(f"Error: {e}")
-            st.info("💡 Tip: Qualifying sessions have the richest telemetry.")
+            err_str = str(e)
+            # Detectar error de datos no disponibles (403 / F1 API bloqueada)
+            if any(x in err_str for x in [
+                "No data for this session",
+                "SessionNotAvailable",
+                "not been loaded yet",
+                "DataNotLoaded",
+                "403",
+            ]):
+                st.markdown(f"""
+                <div style="background:#0E0A04;border:1px solid #E8002D;border-radius:6px;
+                            padding:16px 20px;font-family:'Share Tech Mono',monospace;font-size:11px;
+                            color:#E8002D;line-height:2.0;margin-bottom:10px">
+                    ⛔ <b>DATOS NO DISPONIBLES — {year} {gp_name}</b><br>
+                    <span style="color:#566A7F;font-size:10px">
+                    Formula 1 bloqueó el acceso público a los datos de telemetría<br>
+                    de esta sesión (la API responde HTTP 403 Forbidden).<br><br>
+                    <span style="color:#FFD700">✔ Solución: Seleccioná una temporada entre 2018 y 2025.</span><br>
+                    Los datos de 2026 no están disponibles públicamente aún.<br><br>
+                    Detalle técnico: <code>{err_str[:120]}</code>
+                    </span>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.error(f"Error: {e}")
+                st.info("💡 Tip: Las sesiones de Qualifying tienen la telemetría más completa.")
             return
 
     # ── Welcome screen ────────────────────────────────────────────────────────
@@ -2716,8 +2780,13 @@ def main():
           <div style="font-family:'Orbitron',sans-serif;font-size:24px;font-weight:900;
                       color:#1A2535;letter-spacing:4px;text-transform:uppercase">NO DATA LOADED</div>
           <div style="font-family:'Share Tech Mono',monospace;font-size:11px;
-                      color:#2E3E50;margin-top:14px;line-height:2.2;max-width:420px">
-            SELECT SEASON · GP · SESSION · TWO DRIVERS<br>THEN CLICK ⚡ LOAD TELEMETRY
+                      color:#2E3E50;margin-top:14px;line-height:2.2;max-width:480px">
+            SELECCIONÁ TEMPORADA (2018–2025) · GP · SESIÓN · PILOTOS<br>
+            LUEGO HACÉ CLICK EN ⚡ LOAD TELEMETRY<br><br>
+            <span style="color:#E8002D;font-size:10px">
+            ⚠ 2026 no disponible — F1 bloqueó el acceso público a esos datos.<br>
+            Usá temporadas 2018–2025 para análisis completo.
+            </span>
           </div>
           <div style="margin-top:40px;padding:16px 28px;border:1px solid #1A2535;border-radius:6px;
                       background:#0C1018;font-family:'Share Tech Mono',monospace;font-size:9px;
