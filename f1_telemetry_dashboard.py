@@ -400,17 +400,7 @@ def load_schedule(year):
 def load_session_light(year, gp, stype):
     """Carga liviana — solo para obtener lista de pilotos en el sidebar."""
     sess = fastf1.get_session(year, gp, stype)
-    try:
-        sess.load(telemetry=False, laps=False, weather=False, messages=False)
-    except Exception as e:
-        err = str(e)
-        if "No data for this session" in err or "SessionNotAvailable" in err:
-            raise RuntimeError(
-                f"La API de F1 no tiene datos para {year} {gp} {stype}. "
-                f"Si es 2026, los datos están bloqueados (HTTP 403). "
-                f"Probá con 2018–2025."
-            ) from e
-        raise
+    sess.load(telemetry=False, laps=False, weather=False, messages=False)
     return sess
 
 
@@ -418,26 +408,22 @@ def load_session_light(year, gp, stype):
 def load_session(year, gp, stype):
     """Carga completa con telemetría — para análisis."""
     sess = fastf1.get_session(year, gp, stype)
+    sess.load(telemetry=True, laps=True, weather=False, messages=False)
+    # Validar que los datos se cargaron realmente.
+    # FastF1 3.x captura los errores de red silenciosamente (solo loguea WARNING)
+    # y deja _laps como None — acceder a session.laps después lanza DataNotLoadedError.
+    # Detectarlo aquí da un mensaje útil en lugar del error críptico.
     try:
-        sess.load(telemetry=True, laps=True, weather=False, messages=False)
-    except Exception as e:
-        err = str(e)
-        if "No data for this session" in err or "SessionNotAvailable" in err:
-            raise RuntimeError(
-                f"La API de F1 no tiene datos para {year} {gp} {stype}. "
-                f"Si es 2026, los datos están bloqueados (HTTP 403). "
-                f"Probá con 2018–2025."
-            ) from e
-        raise
-    # Validar que realmente se cargaron datos
-    try:
-        _ = sess.laps
-    except Exception as e:
+        _ = sess.laps  # lanza DataNotLoadedError si no hay datos
+    except Exception:
         raise RuntimeError(
-            f"Sesión cargada pero sin datos de vueltas — "
-            f"la API de F1 devolvió datos vacíos para {year} {gp} {stype}. "
-            f"Probá con una temporada entre 2018 y 2025."
-        ) from e
+            f"FastF1 no pudo cargar datos para {year} {gp} {stype}.\n\n"
+            f"Causa más probable: la API de F1 (livetiming.formula1.com) no devolvió datos "
+            f"— esto puede ocurrir por caché vacío en un entorno nuevo, problema de red, "
+            f"o datos aún no publicados para esta sesión.\n\n"
+            f"Si tenés el caché local (~/.cache/fastf1) con datos de 2026, copialo al "
+            f"servidor donde corre Streamlit. Alternativamente, probá con 2018–2025."
+        )
     return sess
 
 
@@ -451,10 +437,9 @@ def get_drivers(year, gp, stype):
             for d in sess.drivers
         ])
     except Exception:
-        # Grid 2026: Audi, Cadillac + equipos tradicionales
-        return ["VER","NOR","LEC","RUS","HAM","PIA","ALO","ANT",
-                "GAS","OCO","TSU","LAW","HUL","BEA","STR","COL",
-                "BOT","BOR","DRU","HAD"]
+        return ["VER","PER","LEC","SAI","HAM","RUS","NOR","PIA",
+                "ALO","STR","GAS","OCO","TSU","RIC","ALB","SAR",
+                "MAG","HUL","BOT","ZHO"]
 
 
 def get_circuit_info(session):
@@ -2222,18 +2207,7 @@ def render_sidebar():
             DATA ANALYSIS SUITE v2
         </div>""", unsafe_allow_html=True)
 
-        year = st.selectbox("SEASON", list(range(2025, 2017, -1)), index=0)
-
-        if year == 2026:
-            st.markdown("""
-            <div style="background:#14100A;border:1px solid #E8002D;border-radius:4px;
-                        padding:10px 14px;margin:6px 0 10px;font-family:'Share Tech Mono',monospace;
-                        font-size:10px;color:#E8002D;line-height:1.8">
-                ⚠ <b>2026 NO DISPONIBLE</b><br>
-                <span style="color:#566A7F">Formula 1 bloqueó el acceso público<br>
-                a los datos de telemetría 2026 (HTTP 403).<br>
-                Usá 2018–2025 para datos completos.</span>
-            </div>""", unsafe_allow_html=True)
+        year = st.selectbox("SEASON", [2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018], index=0)
 
         try:
             sched  = load_schedule(year)
@@ -2745,30 +2719,26 @@ def main():
         except Exception as e:
             ph_prog.empty(); ph_status.empty()
             err_str = str(e)
-            # Detectar error de datos no disponibles (403 / F1 API bloqueada)
-            if any(x in err_str for x in [
-                "No data for this session",
+            is_data_error = any(x in err_str for x in [
+                "no pudo cargar datos",       # nuestro mensaje custom
+                "No data for this session",   # FastF1 SessionNotAvailableError
                 "SessionNotAvailable",
-                "not been loaded yet",
                 "DataNotLoaded",
-                "403",
-            ]):
-                st.markdown(f"""
-                <div style="background:#0E0A04;border:1px solid #E8002D;border-radius:6px;
-                            padding:16px 20px;font-family:'Share Tech Mono',monospace;font-size:11px;
-                            color:#E8002D;line-height:2.0;margin-bottom:10px">
-                    ⛔ <b>DATOS NO DISPONIBLES — {year} {gp_name}</b><br>
-                    <span style="color:#566A7F;font-size:10px">
-                    Formula 1 bloqueó el acceso público a los datos de telemetría<br>
-                    de esta sesión (la API responde HTTP 403 Forbidden).<br><br>
-                    <span style="color:#FFD700">✔ Solución: Seleccioná una temporada entre 2018 y 2025.</span><br>
-                    Los datos de 2026 no están disponibles públicamente aún.<br><br>
-                    Detalle técnico: <code>{err_str[:120]}</code>
-                    </span>
-                </div>""", unsafe_allow_html=True)
+                "not been loaded yet",
+            ])
+            if is_data_error:
+                st.error(f"⛔ Sin datos: {e}")
+                st.warning(
+                    "**¿Por qué pasa esto?** FastF1 guarda los datos en un caché local en disco. "
+                    "Si el entorno donde corre Streamlit es nuevo (p.ej. Streamlit Cloud, contenedor, "
+                    "otra PC), ese caché está vacío y necesita descargar de internet.\n\n"
+                    "**Para 2026:** la API de F1 puede tener restricciones de acceso para ciertas sesiones recientes. "
+                    "Si tu versión local funciona, es porque ya tiene los datos cacheados en `~/.cache/fastf1`.\n\n"
+                    "**Solución rápida:** seleccioná una temporada 2018–2025 — esos datos están disponibles públicamente."
+                )
             else:
                 st.error(f"Error: {e}")
-                st.info("💡 Tip: Las sesiones de Qualifying tienen la telemetría más completa.")
+            st.info("💡 Tip: Qualifying sessions have the richest telemetry.")
             return
 
     # ── Welcome screen ────────────────────────────────────────────────────────
@@ -2780,13 +2750,8 @@ def main():
           <div style="font-family:'Orbitron',sans-serif;font-size:24px;font-weight:900;
                       color:#1A2535;letter-spacing:4px;text-transform:uppercase">NO DATA LOADED</div>
           <div style="font-family:'Share Tech Mono',monospace;font-size:11px;
-                      color:#2E3E50;margin-top:14px;line-height:2.2;max-width:480px">
-            SELECCIONÁ TEMPORADA (2018–2025) · GP · SESIÓN · PILOTOS<br>
-            LUEGO HACÉ CLICK EN ⚡ LOAD TELEMETRY<br><br>
-            <span style="color:#E8002D;font-size:10px">
-            ⚠ 2026 no disponible — F1 bloqueó el acceso público a esos datos.<br>
-            Usá temporadas 2018–2025 para análisis completo.
-            </span>
+                      color:#2E3E50;margin-top:14px;line-height:2.2;max-width:420px">
+            SELECT SEASON · GP · SESSION · TWO DRIVERS<br>THEN CLICK ⚡ LOAD TELEMETRY
           </div>
           <div style="margin-top:40px;padding:16px 28px;border:1px solid #1A2535;border-radius:6px;
                       background:#0C1018;font-family:'Share Tech Mono',monospace;font-size:9px;
